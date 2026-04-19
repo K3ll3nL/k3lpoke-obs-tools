@@ -1,0 +1,48 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * { box-sizing: border-box; }
+  body {
+    background-color: #0e0e10;
+    color: #efeff1;
+    font-family: Inter, system-ui, sans-serif;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    user-select: none;
+  }
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: #18181b; }
+  ::-webkit-scrollbar-thumb { background: #3d3d4a; border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: #9146FF; }
+}
+
+@layer components {
+  .btn {
+    @apply px-4 py-2 rounded-md font-medium text-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+  .btn-purple {
+    @apply btn bg-twitch-purple hover:bg-purple-500 text-white;
+  }
+  .btn-ghost {
+    @apply btn bg-transparent hover:bg-twitch-surface text-twitch-muted hover:text-twitch-text border border-twitch-border;
+  }
+  .btn-danger {
+    @apply btn bg-red-600 hover:bg-red-500 text-white;
+  }
+  .btn-success {
+    @apply btn bg-green-600 hover:bg-green-500 text-white;
+  }
+  .card {
+    @apply bg-twitch-surface border border-twitch-border rounded-lg;
+  }
+  .input {
+    @apply bg-twitch-mid border border-twitch-border rounded-md px-3 py-2 text-sm text-twitch-text
+           placeholder-twitch-muted focus:outline-none focus:border-twitch-purple w-full;
+  }
+  .label {
+    @apply block text-xs font-medium text-twitch-muted mb-1 uppercase tracking-wide;
+  }
+}

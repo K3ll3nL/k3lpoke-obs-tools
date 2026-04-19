@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Clip Player</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      width: 100vw;
+      height: 100vh;
+      background: transparent;
+      overflow: hidden;
+      font-family: Inter, 'Segoe UI', sans-serif;
+    }
+
+    .slot {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+    }
+    .slot.active { opacity: 1; }
+    .slot video {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      background: #000;
+    }
+
+    #overlay-info {
+      position: absolute;
+      z-index: 10;
+      background: linear-gradient(to top, rgba(0,0,0,0.82) 0%, transparent 100%);
+      opacity: 0;
+      transform: translateY(6px);
+      transition: opacity 0.35s ease, transform 0.35s ease;
+      pointer-events: none;
+    }
+    #overlay-info.visible { opacity: 1; transform: translateY(0); }
+
+    #overlay-info.bottom-left  { bottom: 0; left: 0; }
+    #overlay-info.bottom-right { bottom: 0; right: 0; text-align: right; }
+    #overlay-info.top-left     { top: 0; left: 0; }
+    #overlay-info.top-right    { top: 0; right: 0; text-align: right; }
+
+    #overlay-info.size-compact { padding: 6px 10px 10px; max-width: 45%; }
+    #overlay-info.size-normal  { padding: 10px 16px 14px; max-width: 65%; }
+    #overlay-info.size-large   { padding: 16px 24px 22px; max-width: 85%; }
+
+    #clip-title {
+      color: #fff;
+      font-weight: 700;
+      line-height: 1.3;
+      text-shadow: 0 1px 4px rgba(0,0,0,0.9);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #clip-meta {
+      color: #ccc;
+      font-weight: 400;
+      line-height: 1.4;
+      margin-top: 3px;
+      text-shadow: 0 1px 3px rgba(0,0,0,0.9);
+    }
+    #clip-meta:empty { display: none; }
+    #clip-meta .creator { color: #9146FF; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <div id="slot-a" class="slot">
+    <video id="video-a" playsinline></video>
+  </div>
+  <div id="slot-b" class="slot">
+    <video id="video-b" playsinline></video>
+  </div>
+
+  <div id="overlay-info" class="bottom-left size-normal">
+    <div id="clip-title"></div>
+    <div id="clip-meta"></div>
+  </div>
+
+  <script>
+    const API = 'http://localhost:3000'
+    const info    = document.getElementById('overlay-info')
+    const titleEl = document.getElementById('clip-title')
+    const metaEl  = document.getElementById('clip-meta')
+
+    const slots = [
+      { wrap: document.getElementById('slot-a'), video: document.getElementById('video-a') },
+      { wrap: document.getElementById('slot-b'), video: document.getElementById('video-b') }
+    ]
+
+    let queue        = []
+    let idx          = 0
+    let activeSlot   = 0
+    let activeClipId = null
+    let nextPreload  = null   // Promise<{clip, slotIdx}|null>
+    let overlayTimer = null
+    let started      = false
+    let wsRef        = null
+
+    // OBS reroute_audio captures the HTML video element's native audio output directly.
+    // createMediaElementSource() disconnects that pipeline and routes through Web Audio,
+    // which OBS cannot capture — so we must never use Web Audio API in this overlay.
+    function applyVolume(slotIdx, vol) {
+      slots[slotIdx].video.volume = Math.min(1, Math.max(0, Number(vol) || 1))
+    }
+
+    let config = {
+      showOverlay: true,
+      position: 'bottom-left',
+      fontSize: 16,
+      cardSize: 'normal',
+      displayMode: 'timed',
+      displayDuration: 8,
+      showTitle: true,
+      showBroadcaster: true,
+      showCreator: true,
+      showViews: false,
+      showDate: false,
+      showDuration: false,
+      biasPopular: false,
+      biasRecent: false,
+      channelWeights: {},
+    }
+
+    function applyConfig(cfg) {
+      const prev = { biasPopular: config.biasPopular, biasRecent: config.biasRecent, channelWeights: config.channelWeights }
+      const wasVisible = info.classList.contains('visible')
+      config = { ...config, ...cfg }
+      // Migrate legacy shuffleBias string
+      if (cfg.shuffleBias && cfg.shuffleBias !== 'none') {
+        if (cfg.shuffleBias === 'popular') config.biasPopular = true
+        if (cfg.shuffleBias === 'recent')  config.biasRecent  = true
+      }
+      info.className = `${config.position} size-${config.cardSize || 'normal'}`
+      if (wasVisible) info.classList.add('visible')
+      titleEl.style.fontSize = config.fontSize + 'px'
+      metaEl.style.fontSize  = Math.max(10, config.fontSize - 3) + 'px'
+      info.style.display = config.showOverlay ? '' : 'none'
+      const biasChanged = prev.biasPopular !== config.biasPopular || prev.biasRecent !== config.biasRecent
+      const weightsChanged = JSON.stringify(prev.channelWeights) !== JSON.stringify(config.channelWeights)
+      if (biasChanged || weightsChanged) loadQueue()
+    }
+
+    function shuffle(arr) {
+      const a = [...arr]
+      for (let i = a.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [a[i], a[j]] = [a[j], a[i]]
+      }
+      return a
+    }
+
+    // Weighted shuffle using exponential-distribution trick.
+    // Channel weights control proportion across channels; bias modifiers boost
+    // popular/recent clips within each channel. Every clip appears exactly once per cycle.
+    function biasedShuffle(clips) {
+      const { biasPopular, biasRecent, channelWeights = {} } = config
+      const hasWeights = Object.keys(channelWeights).length > 0
+      if (!biasPopular && !biasRecent && !hasWeights || clips.length <= 1) return shuffle(clips)
+
+      const byChannel = {}
+      for (const c of clips) {
+        const ch = c.broadcaster_name || ''
+        ;(byChannel[ch] = byChannel[ch] || []).push(c)
+      }
+
+      const channels = Object.keys(byChannel)
+      const totalChW = channels.reduce((s, ch) => s + (channelWeights[ch] ?? 1), 0)
+
+      const scored = clips.map(clip => {
+        const ch = clip.broadcaster_name || ''
+        const group = byChannel[ch]
+
+        // Base weight = channel's share divided equally among its clips
+        const chW = channelWeights[ch] ?? 1
+        let weight = (chW / totalChW) / group.length
+
+        // Within-channel popularity boost
+        if (biasPopular) {
+          const max = Math.max(...group.map(c => c.view_count || 0))
+          const score = max > 0 ? (clip.view_count || 0) / max : 0.5
+          weight *= (0.3 + 0.7 * score)
+        }
+
+        // Within-channel recency boost
+        if (biasRecent) {
+          const times = group.map(c => new Date(c.created_at || 0).getTime())
+          const max = Math.max(...times), min = Math.min(...times)
+          const t = new Date(clip.created_at || 0).getTime()
+          const score = max > min ? (t - min) / (max - min) : 0.5
+          weight *= (0.3 + 0.7 * score)
+        }
+
+        return { clip, key: -Math.log(Math.random()) / weight }
+      })
+
+      return scored.sort((a, b) => a.key - b.key).map(s => s.clip)
+    }
+
+    async function loadQueue() {
+      try {
+        const res = await fetch(`${API}/api/queue`)
+        const { clips } = await res.json()
+        queue = biasedShuffle(clips || [])
+        idx = 0
+      } catch { queue = [] }
+    }
+
+    function takeNextClip() {
+      if (!queue.length) return null
+      const clip = queue[idx % queue.length]
+      idx++
+      return clip
+    }
+
+    async function fetchUrl(clipId) {
+      const res = await fetch(`${API}/api/clip-url/${clipId}`)
+      const { url } = await res.json()
+      if (!url) throw new Error('no url')
+      return url
+    }
+
+    function showClipInfo(clip) {
+      if (!config.showOverlay) return
+      clearTimeout(overlayTimer)
+
+      titleEl.textContent = config.showTitle ? (clip.title || '') : ''
+
+      const parts = []
+      if (config.showBroadcaster && clip.broadcaster_name) parts.push(clip.broadcaster_name)
+      if (config.showCreator && clip.creator_name)
+        parts.push(`Clipped by <span class="creator">${clip.creator_name}</span>`)
+      if (config.showViews && clip.view_count != null)
+        parts.push(`${clip.view_count.toLocaleString()} views`)
+      if (config.showDate && clip.created_at)
+        parts.push(new Date(clip.created_at).toLocaleDateString())
+      if (config.showDuration && clip.duration != null) {
+        const m = Math.floor(clip.duration / 60)
+        const s = Math.round(clip.duration % 60)
+        parts.push(`${m}:${s.toString().padStart(2, '0')}`)
+      }
+      metaEl.innerHTML = parts.join(' &middot; ')
+
+      info.classList.remove('visible')
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        info.classList.add('visible')
+        if (config.displayMode === 'timed') {
+          overlayTimer = setTimeout(
+            () => info.classList.remove('visible'),
+            (config.displayDuration || 8) * 1000
+          )
+        }
+      }))
+    }
+
+    // Kick off preloading the NEXT clip into the inactive slot
+    function schedulePreload() {
+      if (!queue.length) { nextPreload = null; return }
+      const clip = takeNextClip()
+      if (!clip) { nextPreload = null; return }
+
+      const nextSlotIdx = 1 - activeSlot
+      const nextVid = slots[nextSlotIdx].video
+
+      nextPreload = fetchUrl(clip.id)
+        .then(url => {
+          nextVid.src = url
+          nextVid.load()
+          nextVid.volume = 0
+          return { clip, slotIdx: nextSlotIdx }
+        })
+        .catch(() => null)
+    }
+
+    function onClipEnded() {
+      clearTimeout(overlayTimer)
+      info.classList.remove('visible')
+      switchToPreloaded()
+    }
+
+    function getEnvelopeVol(envelope, time) {
+      if (!envelope || envelope.length === 0) return 1.0
+      const kfs = [...envelope].sort((a, b) => a.time - b.time)
+      if (time <= kfs[0].time) return kfs[0].volume
+      if (time >= kfs[kfs.length - 1].time) return kfs[kfs.length - 1].volume
+      let i = 0
+      while (i < kfs.length - 2 && kfs[i + 1].time <= time) i++
+      const a = kfs[i], b = kfs[i + 1]
+      if (b.mode === 'instant') return a.volume
+      const p = (time - a.time) / (b.time - a.time)
+      let t = p
+      if (b.curve === 'ease-in')     t = p * p
+      if (b.curve === 'ease-out')    t = 1 - (1 - p) * (1 - p)
+      if (b.curve === 'ease-in-out') t = p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2
+      return a.volume + (b.volume - a.volume) * t
+    }
+
+    function attachClipListeners(video, clip) {
+      let fired = false
+      const hasEnvelope = clip.envelope && clip.envelope.length > 0
+      function done() {
+        if (fired) return
+        fired = true
+        if (clip.trim_end != null || hasEnvelope) video.removeEventListener('timeupdate', onTick)
+        onClipEnded()
+      }
+      function onTick() {
+        if (clip.trim_end != null && video.currentTime >= clip.trim_end) { done(); return }
+        if (hasEnvelope) {
+          const envVol = getEnvelopeVol(clip.envelope, video.currentTime)
+          video.volume = Math.min(1, Math.max(0, (clip.volume ?? 1) * envVol))
+        }
+      }
+      video.addEventListener('ended', done, { once: true })
+      video.addEventListener('error', done, { once: true })
+      if (clip.trim_end != null || hasEnvelope) video.addEventListener('timeupdate', onTick)
+      if (clip.trim_start != null) video.currentTime = clip.trim_start
+    }
+
+    async function switchToPreloaded() {
+      const preloaded = await nextPreload
+      nextPreload = null
+
+      if (!preloaded) {
+        // Preload failed — reload queue and begin fresh
+        await loadQueue()
+        begin()
+        return
+      }
+
+      const { clip, slotIdx } = preloaded
+      const nextSlot = slots[slotIdx]
+      const prevSlot = slots[activeSlot]
+      activeSlot = slotIdx
+
+      // Instant crossfade — pause outgoing video so its audio stops
+      nextSlot.wrap.classList.add('active')
+      prevSlot.wrap.classList.remove('active')
+      prevSlot.video.pause()
+
+      applyVolume(slotIdx, clip.volume)
+      nextSlot.video.play().catch(() => {})
+
+      activeClipId = clip.id
+      notifyNowPlaying(clip)
+      showClipInfo(clip)
+      schedulePreload()
+      attachClipListeners(nextSlot.video, clip)
+    }
+
+    async function begin() {
+      if (!queue.length) {
+        await loadQueue()
+        if (!queue.length) { setTimeout(begin, 10000); return }
+      }
+
+      const clip = takeNextClip()
+      if (!clip) return
+
+      try {
+        const url  = await fetchUrl(clip.id)
+        const slot = slots[activeSlot]
+
+        slot.video.src = url
+        slot.video.load()
+        slot.wrap.classList.add('active')
+        applyVolume(activeSlot, clip.volume)
+        await slot.video.play()
+
+        activeClipId = clip.id
+        notifyNowPlaying(clip)
+        showClipInfo(clip)
+        schedulePreload()
+
+        attachClipListeners(slot.video, clip)
+      } catch {
+        setTimeout(begin, 2000)
+      }
+    }
+
+    function notifyNowPlaying(clip) {
+      if (wsRef && wsRef.readyState === 1) {
+        wsRef.send(JSON.stringify({ type: 'now-playing', clipId: clip.id }))
+      }
+    }
+
+    // ── WebSocket ─────────────────────────────────────────────────────────────
+    function connectWS() {
+      const ws = new WebSocket('ws://localhost:3000')
+      wsRef = ws
+      ws.onopen  = () => tryBegin()
+      ws.onmessage = e => {
+        try {
+          const msg = JSON.parse(e.data)
+          if (msg.type === 'queue-updated') loadQueue()
+          if (msg.type === 'config') applyConfig(msg.config)
+          if (msg.type === 'stop') {
+            queue = []; nextPreload = null
+            slots.forEach(s => { s.video.pause(); s.video.src = '' })
+          }
+          if (msg.type === 'volume-update' && msg.clipId === activeClipId) {
+            applyVolume(activeSlot, msg.volume)
+          }
+        } catch {}
+      }
+      ws.onclose = () => { wsRef = null; setTimeout(connectWS, 3000) }
+      ws.onerror = () => ws.close()
+    }
+
+    function tryBegin() {
+      if (started || document.hidden) return
+      started = true
+      begin()
+    }
+
+    connectWS()
+    // Fallback if WS is slow — but only if the source is actually visible
+    setTimeout(tryBegin, 1500)
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) {
+        slots.forEach(s => s.video.pause())
+      } else {
+        if (!started) tryBegin()
+        else slots[activeSlot].video.play().catch(() => {})
+      }
+    })
+  </script>
+</body>
+</html>
