@@ -90,7 +90,13 @@ wss.on('connection', (ws) => {
       if (msg.type === 'now-playing' && msg.clipId) {
         const clip = getClipById(msg.clipId)
         playerState = { playing: true, currentClip: clip }
+        nextClipState = null
         if (mainWindowRef) mainWindowRef.webContents.send('player:now-playing', clip)
+        if (mainWindowRef) mainWindowRef.webContents.send('player:next-clip', null)
+      }
+      if (msg.type === 'next-preloaded') {
+        nextClipState = msg.clip ?? null
+        if (mainWindowRef) mainWindowRef.webContents.send('player:next-clip', msg.clip ?? null)
       }
     } catch {}
   })
@@ -110,9 +116,13 @@ export function broadcastToOverlay(message) {
 // ── Player state ────────────────────────────────────────────────────────────
 
 let playerState = { playing: false, currentClip: null }
+let nextClipState = null
 
-export function getPlayerState() {
-  return playerState
+export function getPlayerState() { return playerState }
+export function getNextClipState() { return nextClipState }
+export function broadcastSkipNext() {
+  nextClipState = null
+  broadcastToOverlay({ type: 'skip-next' })
 }
 
 export function playClip(clip) {

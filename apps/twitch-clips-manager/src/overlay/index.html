@@ -130,6 +130,7 @@
       biasPopular: false,
       biasRecent: false,
       channelWeights: {},
+      playAllBeforeLoop: true,
     }
 
     function applyConfig(cfg) {
@@ -246,13 +247,49 @@
       return sets[sets.length - 1].collectionId
     }
 
+    function weightedRandom(clips) {
+      if (!clips || !clips.length) return null
+      const { biasPopular, biasRecent, channelWeights = {} } = config
+      if (!biasPopular && !biasRecent && Object.keys(channelWeights).length === 0) {
+        return clips[Math.floor(Math.random() * clips.length)]
+      }
+      const byChannel = {}
+      for (const c of clips) {
+        const ch = c.broadcaster_name || '';
+        (byChannel[ch] = byChannel[ch] || []).push(c)
+      }
+      const channels = Object.keys(byChannel)
+      const totalChW = channels.reduce((s, ch) => s + (channelWeights[ch] ?? 1), 0)
+      const scored = clips.map(clip => {
+        const ch = clip.broadcaster_name || '', group = byChannel[ch]
+        const chW = channelWeights[ch] ?? 1
+        let weight = (chW / totalChW) / group.length
+        if (biasPopular) {
+          const max = Math.max(...group.map(c => c.view_count || 0))
+          weight *= 0.3 + 0.7 * (max > 0 ? (clip.view_count || 0) / max : 0.5)
+        }
+        if (biasRecent) {
+          const times = group.map(c => new Date(c.created_at || 0).getTime())
+          const tmax = Math.max(...times), tmin = Math.min(...times)
+          const t = new Date(clip.created_at || 0).getTime()
+          weight *= 0.3 + 0.7 * (tmax > tmin ? (t - tmin) / (tmax - tmin) : 0.5)
+        }
+        return { clip, weight }
+      })
+      const total = scored.reduce((s, w) => s + w.weight, 0)
+      let rand = Math.random() * total
+      for (const { clip, weight } of scored) { rand -= weight; if (rand <= 0) return clip }
+      return scored[scored.length - 1].clip
+    }
+
     function takeNextClip() {
       const colId = pickCollectionId()
-      const q = colQueues[colId] || colQueues['main']
-      if (!q || !q.length) return null
       const effectiveId = colQueues[colId]?.length ? colId : 'main'
+      const q = colQueues[effectiveId]
+      if (!q || !q.length) return null
+      if (!config.playAllBeforeLoop) return weightedRandom(q)
       const idx = colIndices[effectiveId] ?? 0
-      const clip = (colQueues[effectiveId])[idx % colQueues[effectiveId].length]
+      const clip = q[idx % q.length]
       colIndices[effectiveId] = idx + 1
       return clip
     }
@@ -320,12 +357,19 @@
       }))
     }
 
+    function notifyNextClip(clip) {
+      if (wsRef && wsRef.readyState === 1) {
+        wsRef.send(JSON.stringify({ type: 'next-preloaded', clip: clip ?? null }))
+      }
+    }
+
     // Kick off preloading the NEXT clip into the inactive slot
     function schedulePreload() {
-      if (!queue.length) { nextPreload = null; return }
+      if (!hasAnyClips()) { nextPreload = null; notifyNextClip(null); return }
       const clip = takeNextClip()
-      if (!clip) { nextPreload = null; return }
+      if (!clip) { nextPreload = null; notifyNextClip(null); return }
 
+      notifyNextClip(clip)
       const nextSlotIdx = 1 - activeSlot
       const nextVid = slots[nextSlotIdx].video
 
@@ -483,6 +527,10 @@
           }
           if (msg.type === 'volume-update' && msg.clipId === activeClipId) {
             applyVolume(activeSlot, msg.volume)
+          }
+          if (msg.type === 'skip-next') {
+            nextPreload = null
+            schedulePreload()
           }
         } catch {}
       }

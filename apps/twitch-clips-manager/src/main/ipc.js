@@ -13,9 +13,9 @@ import {
   getPlaybackConfig, setPlaybackConfig
 } from './db.js'
 import {
-  playClip, stopPlayer, getPlayerState, getOverlayUrl, sendOverlayConfig,
-  notifyQueueUpdated, broadcastVolumeChange, setMainWindow,
-  broadcastPlaybackConfigUpdated, broadcastCollectionsUpdated
+  playClip, stopPlayer, getPlayerState, getNextClipState, broadcastSkipNext,
+  getOverlayUrl, sendOverlayConfig, notifyQueueUpdated, broadcastVolumeChange,
+  setMainWindow, broadcastPlaybackConfigUpdated, broadcastCollectionsUpdated
 } from './server.js'
 
 export async function runAutoFetch(win) {
@@ -212,6 +212,8 @@ export function registerIpcHandlers(mainWindow) {
 
   // ── Player ────────────────────────────────────────────────────────────────
   handle('player:getState', () => getPlayerState())
+  handle('player:getNextClip', () => getNextClipState())
+  handle('player:skipNext', () => { broadcastSkipNext(); return null })
 
   handle('player:play', ({ clipId }) => {
     const queue = getClipsByStatus('approved')

@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef, useMemo } from 'react'
-import { Copy, Monitor, Check, Volume2, Lock, X, Scissors, Activity, Layers, Shuffle } from 'lucide-react'
+import { Copy, Monitor, Check, Volume2, Lock, X, Scissors, Activity, Layers, Shuffle, SkipForward } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import TrimBar from './TrimBar'
 import WaveformEditor from './WaveformEditor'
@@ -27,6 +27,9 @@ export default function RightPanel() {
   const [clipEnvelope, setClipEnvelope] = useState([])
   const pendingClip = useRef(null)
   const lockedRef = useRef(false)
+
+  // Up Next
+  const [nextClip, setNextClip] = useState(null)
 
   // Collections / playback source
   const [collections, setCollections] = useState([])
@@ -66,6 +69,8 @@ export default function RightPanel() {
     window.api.player.onNowPlaying(clip => {
       if (lockedRef.current) { pendingClip.current = clip } else { applyClip(clip) }
     })
+    window.api.player.getNextClip().then(r => { if (r.ok) setNextClip(r.data) })
+    window.api.player.onNextClip(clip => setNextClip(clip))
     window.api.collections.list().then(r => { if (r.ok) setCollections(r.data) })
     window.api.playback.getConfig().then(r => {
       if (!r.ok) return
@@ -260,6 +265,35 @@ export default function RightPanel() {
           </div>
         ) : (
           <p className="text-xs text-twitch-muted">Nothing playing in OBS yet.</p>
+        )}
+      </div>
+
+      {/* Up Next */}
+      <div className="px-4 py-4 border-b border-twitch-border shrink-0">
+        <h2 className="font-semibold text-sm text-twitch-text flex items-center gap-1.5 mb-3">
+          <SkipForward size={15} /> Up Next
+        </h2>
+        {nextClip ? (
+          <div className="flex gap-2.5 items-start">
+            <div className="relative shrink-0 w-16 h-9 rounded overflow-hidden bg-black">
+              {nextClip.thumbnail_url
+                ? <img src={nextClip.thumbnail_url} className="w-full h-full object-cover" alt="" />
+                : <div className="w-full h-full bg-twitch-surface" />}
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-medium text-twitch-text leading-snug line-clamp-2">{nextClip.title}</p>
+              <p className="text-[10px] text-twitch-muted mt-0.5">{nextClip.broadcaster_name}</p>
+            </div>
+            <button
+              onClick={() => window.api.player.skipNext()}
+              title="Skip — pick a different next clip"
+              className="shrink-0 w-7 h-7 rounded flex items-center justify-center text-twitch-muted hover:text-twitch-text hover:bg-twitch-surface transition-colors"
+            >
+              <SkipForward size={13} />
+            </button>
+          </div>
+        ) : (
+          <p className="text-xs text-twitch-muted">Nothing queued yet.</p>
         )}
       </div>
 

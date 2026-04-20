@@ -267,6 +267,12 @@ export default function ClipSettings() {
                 checked={overlayConfig.biasRecent}
                 onChange={v => setOverlayConfig(p => ({ ...p, biasRecent: v }))}
               />
+              <Toggle
+                label="Play All Before Looping"
+                description="Cycle through every clip once before any clip repeats; when off, each pick is fully random"
+                checked={overlayConfig.playAllBeforeLoop ?? true}
+                onChange={v => setOverlayConfig(p => ({ ...p, playAllBeforeLoop: v }))}
+              />
             </div>
           </div>
         </section>

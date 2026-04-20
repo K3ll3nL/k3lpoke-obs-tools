@@ -40,6 +40,7 @@ export default function Collections() {
   // Rename
   const [editingId, setEditingId] = useState(null)
   const [editName, setEditName] = useState('')
+  const [dragOverColId, setDragOverColId] = useState(null)
 
   const allCollections = useMemo(() => [
     { id: 'main', name: 'Main Queue', color: '#9146ff', clipCount: approvedCount },
@@ -107,6 +108,27 @@ export default function Collections() {
     loadCollections()
   }
 
+  function onDragStart(e, clipId) {
+    e.dataTransfer.setData('application/json', JSON.stringify({ clipId, sourceColId: selectedId }))
+    e.dataTransfer.effectAllowed = 'move'
+  }
+
+  async function onDrop(e, targetColId) {
+    e.preventDefault()
+    setDragOverColId(null)
+    if (targetColId === 'main') return
+    try {
+      const { clipId, sourceColId } = JSON.parse(e.dataTransfer.getData('application/json'))
+      if (targetColId === sourceColId) return
+      await window.api.collections.addClip(targetColId, clipId)
+      if (sourceColId !== 'main') {
+        await window.api.collections.removeClip(sourceColId, clipId)
+        setClips(prev => prev.filter(c => c.id !== clipId))
+      }
+      loadCollections()
+    } catch {}
+  }
+
   const selected = allCollections.find(c => c.id === selectedId)
 
   return (
@@ -162,10 +184,15 @@ export default function Collections() {
                 <button
                   onClick={() => setSelectedId(col.id)}
                   onDoubleClick={() => col.id !== 'main' && startRename(col)}
+                  onDragOver={col.id !== 'main' ? e => { e.preventDefault(); setDragOverColId(col.id) } : undefined}
+                  onDragLeave={col.id !== 'main' ? () => setDragOverColId(null) : undefined}
+                  onDrop={col.id !== 'main' ? e => onDrop(e, col.id) : undefined}
                   className={`w-full text-left px-3 py-2 rounded-md transition-colors flex items-center gap-2 ${
-                    selectedId === col.id
-                      ? 'bg-twitch-surface text-twitch-text'
-                      : 'text-twitch-muted hover:bg-twitch-surface/60 hover:text-twitch-text'
+                    dragOverColId === col.id
+                      ? 'bg-twitch-purple/20 border border-twitch-purple/50 text-twitch-text'
+                      : selectedId === col.id
+                        ? 'bg-twitch-surface text-twitch-text'
+                        : 'text-twitch-muted hover:bg-twitch-surface/60 hover:text-twitch-text'
                   }`}
                 >
                   <span className="w-2 h-2 rounded-full shrink-0" style={{ background: col.color }} />
@@ -210,7 +237,12 @@ export default function Collections() {
           )}
 
           {!clipsLoading && clips.map(clip => (
-            <div key={clip.id} className="flex items-center gap-3 p-3 rounded-lg border border-twitch-border bg-twitch-surface">
+            <div
+              key={clip.id}
+              draggable
+              onDragStart={e => onDragStart(e, clip.id)}
+              className="flex items-center gap-3 p-3 rounded-lg border border-twitch-border bg-twitch-surface cursor-grab active:cursor-grabbing"
+            >
               <div className="relative shrink-0 w-24 h-[54px] rounded overflow-hidden bg-black">
                 {clip.thumbnail_url
                   ? <img src={clip.thumbnail_url} alt="" className="w-full h-full object-cover" />

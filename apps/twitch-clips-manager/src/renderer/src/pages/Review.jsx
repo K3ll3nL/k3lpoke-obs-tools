@@ -119,7 +119,7 @@ function ClipRow({ clip, onStatusChange, collections, onCollectionsChanged, sele
     <div className={`group rounded-lg border transition-colors overflow-hidden ${
       selected ? 'border-twitch-purple' : expanded ? 'border-twitch-purple' : 'border-twitch-border'
     } bg-twitch-surface`}>
-      <div className="flex">
+      <div className="flex gap-3">
         {/* Checkbox */}
         <div
           className="flex items-center pl-3 shrink-0"
@@ -278,7 +278,7 @@ export default function Review() {
   const [sortBy, setSortBy] = useState('views')
   const [search, setSearch] = useState('')
   const [creatorFilter, setCreatorFilter] = useState('')
-  const [hideReviewed, setHideReviewed] = useState(false)
+  const [statusFilter, setStatusFilter] = useState('all')
   const [collections, setCollections] = useState([])
 
   // Selection
@@ -374,7 +374,9 @@ export default function Review() {
 
   const filteredClips = useMemo(() => {
     let clips = [...allClips]
-    if (hideReviewed) clips = clips.filter(c => c.status === 'pending')
+    if (statusFilter === 'pending')  clips = clips.filter(c => c.status === 'pending')
+    if (statusFilter === 'approved') clips = clips.filter(c => c.status === 'approved')
+    if (statusFilter === 'denied')   clips = clips.filter(c => c.status === 'denied')
     if (search) clips = clips.filter(c => c.title?.toLowerCase().includes(search.toLowerCase()))
     if (creatorFilter) clips = clips.filter(c => c.creator_name === creatorFilter)
     switch (sortBy) {
@@ -384,7 +386,7 @@ export default function Review() {
       case 'az':     clips.sort((a, b) => (a.title ?? '').localeCompare(b.title ?? '')); break
     }
     return clips
-  }, [allClips, search, creatorFilter, sortBy, hideReviewed])
+  }, [allClips, search, creatorFilter, sortBy, statusFilter])
 
   const selectionActive = selectedIds.size > 0
 
@@ -420,14 +422,24 @@ export default function Review() {
         {/* Toolbar */}
         <div className="border-b border-twitch-border shrink-0 px-5 py-3 flex items-center gap-3 flex-wrap">
           <h1 className="font-bold text-lg text-twitch-text shrink-0">Review</h1>
-          <button
-            onClick={() => setHideReviewed(v => !v)}
-            className={`text-xs px-2.5 py-1 rounded border transition-colors ${
-              hideReviewed ? 'bg-twitch-purple border-twitch-purple text-white' : 'border-twitch-border text-twitch-muted hover:border-twitch-purple/50 hover:text-twitch-text'
-            }`}
-          >
-            Hide Reviewed
-          </button>
+          <div className="flex rounded-md overflow-hidden border border-twitch-border shrink-0">
+            {[
+              { value: 'all',      label: 'All' },
+              { value: 'pending',  label: 'Unreviewed' },
+              { value: 'approved', label: 'Accepted' },
+              { value: 'denied',   label: 'Denied' },
+            ].map(opt => (
+              <button
+                key={opt.value}
+                onClick={() => setStatusFilter(opt.value)}
+                className={`text-xs px-2.5 py-1 transition-colors border-r last:border-r-0 border-twitch-border ${
+                  statusFilter === opt.value ? 'bg-twitch-purple text-white' : 'text-twitch-muted hover:text-twitch-text'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
           <div className="relative flex-1 min-w-32">
             <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-twitch-muted pointer-events-none" />
             <input className="input pl-7 text-sm" placeholder="Search clips..." value={search} onChange={e => setSearch(e.target.value)} />

@@ -56,10 +56,13 @@ contextBridge.exposeInMainWorld('api', {
   // Player
   player: {
     getState: () => invoke('player:getState'),
+    getNextClip: () => invoke('player:getNextClip'),
+    skipNext: () => invoke('player:skipNext'),
     play: (clipId) => invoke('player:play', { clipId }),
     stop: () => invoke('player:stop'),
     onStateChanged: (cb) => ipcRenderer.on('player:state-changed', (_, d) => cb(d)),
-    onNowPlaying: (cb) => ipcRenderer.on('player:now-playing', (_, d) => cb(d))
+    onNowPlaying: (cb) => ipcRenderer.on('player:now-playing', (_, d) => cb(d)),
+    onNextClip: (cb) => ipcRenderer.on('player:next-clip', (_, d) => cb(d)),
   },
 
   // Settings
