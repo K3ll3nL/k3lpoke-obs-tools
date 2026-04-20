@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from 'react'
-import { Routes, Route, Navigate } from 'react-router-dom'
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import Nav from './components/Nav'
+import RightPanel from './components/RightPanel'
 import Setup from './pages/Setup'
 import Updates from './pages/Updates'
 import Review from './pages/Review'
-import Queue from './pages/Queue'
 import Collections from './pages/Collections'
 import Settings from './pages/Settings'
 import Marketplace from './pages/Marketplace'
@@ -44,6 +44,8 @@ export default function App() {
   }
 
   const isSetup = !!twitchUser
+  const { pathname } = useLocation()
+  const hidePanel = ['/settings', '/setup', '/marketplace'].includes(pathname)
 
   return (
     <div className="flex h-screen bg-twitch-dark overflow-hidden">
@@ -65,9 +67,6 @@ export default function App() {
           <Route path="/review" element={
             isSetup ? <Review /> : <Navigate to="/setup" />
           } />
-          <Route path="/queue" element={
-            isSetup ? <Queue /> : <Navigate to="/setup" />
-          } />
           <Route path="/collections" element={
             isSetup ? <Collections /> : <Navigate to="/setup" />
           } />
@@ -87,6 +86,7 @@ export default function App() {
           } />
         </Routes>
       </main>
+      {isSetup && !hidePanel && <RightPanel />}
     </div>
   )
 }

@@ -20,7 +20,6 @@ export const APP_REGISTRY = [
     navItems: [
       { to: '/updates',     icon: Bell,           label: 'Updates'     },
       { to: '/review',      icon: ClipboardCheck, label: 'Review'      },
-      { to: '/queue',       icon: ListVideo,      label: 'Queue'       },
       { to: '/collections', icon: Layers,         label: 'Collections' },
       { to: '/clip-settings', icon: Settings,     label: 'Settings'    },
     ],
