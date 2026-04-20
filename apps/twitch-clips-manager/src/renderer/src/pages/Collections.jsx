@@ -235,12 +235,12 @@ export default function Collections() {
           </div>
         )}
 
-        <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
+        <div className="flex-1 overflow-y-auto p-1 space-y-0.5">
           {allCollections.map(col => (
             <div key={col.id} className="group relative">
               {editingId === col.id ? (
                 <input
-                  className="input text-sm w-full px-3 py-2"
+                  className="input text-sm w-full px-2 py-5"
                   value={editName}
                   onChange={e => setEditName(e.target.value)}
                   onBlur={() => commitRename(col.id)}
@@ -254,7 +254,7 @@ export default function Collections() {
                   onDragOver={col.id !== 'main' ? e => { e.preventDefault(); setDragOverColId(col.id) } : undefined}
                   onDragLeave={col.id !== 'main' ? () => setDragOverColId(null) : undefined}
                   onDrop={col.id !== 'main' ? e => onDrop(e, col.id) : undefined}
-                  className={`w-full text-left px-3 py-2 rounded-md transition-colors flex items-center gap-2 ${
+                  className={`w-full text-left px-3 py-3 rounded-md transition-colors flex items-center gap-2 ${
                     dragOverColId === col.id
                       ? 'bg-twitch-purple/20 border border-twitch-purple/50 text-twitch-text'
                       : selectedId === col.id
