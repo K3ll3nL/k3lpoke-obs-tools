@@ -511,7 +511,7 @@ export default function Review() {
           )}
           {filteredClips.map((clip, idx) => (
             <ClipRow
-              key={`${clip.id}-${sortBy}-${search}-${creatorFilter}-${hideReviewed}-${selectedChannel}`}
+              key={`${clip.id}-${sortBy}-${search}-${creatorFilter}-${statusFilter}-${selectedChannel}`}
               clip={clip}
               onStatusChange={handleStatusChange}
               collections={collections}
