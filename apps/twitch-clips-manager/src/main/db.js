@@ -59,9 +59,9 @@ export function clipExists(id) {
 
 export function getNewClips(since) {
   const clips = since
-    ? data.clips.filter(c => new Date(c.added_at) > new Date(since))
+    ? data.clips.filter(c => new Date(c.created_at) > new Date(since))
     : data.clips
-  return [...clips].sort((a, b) => new Date(b.added_at) - new Date(a.added_at))
+  return [...clips].sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
 }
 
 export function getAllClips(broadcasterName) {

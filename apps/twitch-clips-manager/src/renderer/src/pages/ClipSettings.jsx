@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Plus, Trash2, LogOut } from 'lucide-react'
+import { Plus, Trash2 } from 'lucide-react'
 
 const CHANNEL_COLORS = [
   '#9146FF','#FF6B6B','#4ECDC4','#FFD93D',
@@ -60,22 +60,16 @@ function PieChart({ data, size = 130 }) {
   )
 }
 
-export default function Settings({ twitchUser, obsConnected }) {
+export default function ClipSettings() {
   const [channels, setChannels] = useState([])
   const [newChannel, setNewChannel] = useState('')
   const [addingChannel, setAddingChannel] = useState(false)
   const [channelError, setChannelError] = useState(null)
 
-  const [obsHost, setObsHost] = useState('localhost')
-  const [obsPort, setObsPort] = useState('4455')
-  const [obsPass, setObsPass] = useState('')
-  const [obsLoading, setObsLoading] = useState(false)
-  const [obsError, setObsError] = useState(null)
-
   const [overlayConfig, setOverlayConfig] = useState({
     showOverlay: true,
     position: 'bottom-left',
-    fontSize: 16,
+    fontSize: 20,
     cardSize: 'normal',
     displayMode: 'timed',
     displayDuration: 8,
@@ -85,11 +79,12 @@ export default function Settings({ twitchUser, obsConnected }) {
     showViews: false,
     showDate: false,
     showDuration: false,
+    forceProper: false,
+    keepCaps: false,
     biasPopular: false,
     biasRecent: false,
     channelWeights: {},
   })
-
   const [configReady, setConfigReady] = useState(false)
 
   useEffect(() => {
@@ -97,13 +92,9 @@ export default function Settings({ twitchUser, obsConnected }) {
     window.api.settings.getAll().then(r => {
       if (!r.ok) return
       const s = r.data
-      if (s.obsHost) setObsHost(s.obsHost)
-      if (s.obsPort) setObsPort(String(s.obsPort))
-      if (s.obsPassword != null) setObsPass(s.obsPassword)
       if (s.overlayConfig) {
         setOverlayConfig(prev => {
           const merged = { ...prev, ...s.overlayConfig }
-          // Migrate legacy shuffleBias string to separate booleans
           if (s.overlayConfig.shuffleBias && s.overlayConfig.shuffleBias !== 'none') {
             merged.biasPopular = merged.biasPopular || s.overlayConfig.shuffleBias === 'popular'
             merged.biasRecent  = merged.biasRecent  || s.overlayConfig.shuffleBias === 'recent'
@@ -115,7 +106,6 @@ export default function Settings({ twitchUser, obsConnected }) {
     })
   }, [])
 
-  // Auto-apply overlay config 500ms after any change
   useEffect(() => {
     if (!configReady) return
     const t = setTimeout(() => {
@@ -150,31 +140,6 @@ export default function Settings({ twitchUser, obsConnected }) {
     loadChannels()
   }
 
-  async function reconnectOBS() {
-    setObsLoading(true)
-    setObsError(null)
-    try {
-      await window.api.settings.set('obsHost', obsHost)
-      await window.api.settings.set('obsPort', parseInt(obsPort, 10))
-      const r = await window.api.obs.connect({ host: obsHost, port: parseInt(obsPort, 10), password: obsPass })
-      if (!r.ok) throw new Error(r.error)
-    } catch (e) {
-      setObsError(e.message)
-    } finally {
-      setObsLoading(false)
-    }
-  }
-
-  async function handleLogout() {
-    await window.api.twitch.logout()
-  }
-
-  function applyNow() {
-    window.api.settings.set('overlayConfig', overlayConfig)
-    window.api.overlay.sendConfig(overlayConfig)
-  }
-
-  // Channel weight helpers
   const totalChWeight = channels.reduce((s, ch) => s + (overlayConfig.channelWeights[ch.name] ?? 1), 0)
   function chEffectivePct(name) {
     if (totalChWeight === 0) return 0
@@ -191,32 +156,11 @@ export default function Settings({ twitchUser, obsConnected }) {
 
   return (
     <div className="h-full overflow-y-auto p-6">
-      <h1 className="font-bold text-xl text-twitch-text mb-6">Settings</h1>
+      <h1 className="font-bold text-xl text-twitch-text mb-6">Clip Queue Settings</h1>
 
       <div className="max-w-2xl space-y-6">
 
-        {/* Twitch Account */}
-        <section className="card p-5">
-          <h2 className="font-semibold text-twitch-text mb-4">Twitch Account</h2>
-          {twitchUser ? (
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <img src={twitchUser.profile_image_url} className="w-9 h-9 rounded-full" alt="" />
-                <div>
-                  <p className="text-sm font-medium text-twitch-text">{twitchUser.display_name}</p>
-                  <p className="text-xs text-twitch-muted">@{twitchUser.login}</p>
-                </div>
-              </div>
-              <button className="btn-ghost flex items-center gap-1.5 text-xs" onClick={handleLogout}>
-                <LogOut size={13} /> Logout
-              </button>
-            </div>
-          ) : (
-            <p className="text-twitch-muted text-sm">Not connected. Go to Setup.</p>
-          )}
-        </section>
-
-        {/* Channels */}
+        {/* Clip Sources */}
         <section className="card p-5">
           <h2 className="font-semibold text-twitch-text mb-1">Clip Sources</h2>
           <p className="text-xs text-twitch-muted mb-4">
@@ -255,34 +199,6 @@ export default function Settings({ twitchUser, obsConnected }) {
           </div>
         </section>
 
-        {/* OBS */}
-        <section className="card p-5">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="font-semibold text-twitch-text">OBS Connection</h2>
-            <span className={`text-xs px-2 py-0.5 rounded-full ${obsConnected ? 'bg-green-900/40 text-green-400' : 'bg-red-900/40 text-red-400'}`}>
-              {obsConnected ? 'Connected' : 'Disconnected'}
-            </span>
-          </div>
-          <div className="grid grid-cols-3 gap-3 mb-3">
-            <div className="col-span-2">
-              <label className="label">Host</label>
-              <input className="input" value={obsHost} onChange={e => setObsHost(e.target.value)} />
-            </div>
-            <div>
-              <label className="label">Port</label>
-              <input className="input" value={obsPort} onChange={e => setObsPort(e.target.value)} />
-            </div>
-          </div>
-          <div className="mb-3">
-            <label className="label">Password</label>
-            <input className="input" type="password" value={obsPass} onChange={e => setObsPass(e.target.value)} placeholder="Optional" />
-          </div>
-          {obsError && <p className="text-red-400 text-xs mb-2">{obsError}</p>}
-          <button className="btn-purple" onClick={reconnectOBS} disabled={obsLoading}>
-            {obsLoading ? 'Connecting...' : obsConnected ? 'Reconnect' : 'Connect'}
-          </button>
-        </section>
-
         {/* Playback Order */}
         <section className="card p-5">
           <h2 className="font-semibold text-twitch-text mb-1">Playback Order</h2>
@@ -291,60 +207,41 @@ export default function Settings({ twitchUser, obsConnected }) {
           </p>
 
           <div className="space-y-6">
-
-            {/* Channel Distribution */}
             <div>
               <label className="label mb-1 block">Channel Distribution</label>
               <p className="text-xs text-twitch-muted mb-3">
                 Set the relative weight for each channel. Higher weight means more clips from that channel.
               </p>
-
               {channels.length === 0 ? (
                 <p className="text-xs text-twitch-muted py-2">Add channels in Clip Sources above.</p>
               ) : (
                 <div className="space-y-4">
-                  {/* Sliders */}
                   <div className="space-y-2.5">
                     {channels.map((ch, i) => {
                       const w = overlayConfig.channelWeights[ch.name] ?? 1
-                      const pct = chEffectivePct(ch.name)
                       return (
                         <div key={ch.name} className="flex items-center gap-2.5">
-                          <div
-                            className="w-2.5 h-2.5 rounded-full shrink-0"
-                            style={{ backgroundColor: CHANNEL_COLORS[i % CHANNEL_COLORS.length] }}
-                          />
-                          <span className="text-xs text-twitch-text w-28 truncate shrink-0">
-                            {ch.display_name || ch.name}
-                          </span>
+                          <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: CHANNEL_COLORS[i % CHANNEL_COLORS.length] }} />
+                          <span className="text-xs text-twitch-text w-28 truncate shrink-0">{ch.display_name || ch.name}</span>
                           <input
                             type="range" min="0" max="10" step="0.5"
                             value={w}
                             onChange={e => setChWeight(ch.name, Number(e.target.value))}
                             className="flex-1 accent-twitch-purple"
                           />
-                          <span className="text-[10px] text-twitch-muted w-8 text-right shrink-0 font-mono">
-                            {pct}%
-                          </span>
+                          <span className="text-[10px] text-twitch-muted w-8 text-right shrink-0 font-mono">{chEffectivePct(ch.name)}%</span>
                         </div>
                       )
                     })}
                   </div>
-
-                  {/* Pie chart + legend */}
                   <div className="flex items-center gap-5 pt-1">
                     <PieChart data={pieData} size={130} />
                     <div className="space-y-1.5 min-w-0">
                       {channels.map((ch, i) => (
                         <div key={ch.name} className="flex items-center gap-2 min-w-0">
-                          <div
-                            className="w-2 h-2 rounded-full shrink-0"
-                            style={{ backgroundColor: CHANNEL_COLORS[i % CHANNEL_COLORS.length] }}
-                          />
+                          <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: CHANNEL_COLORS[i % CHANNEL_COLORS.length] }} />
                           <span className="text-xs text-twitch-muted truncate">{ch.display_name || ch.name}</span>
-                          <span className="text-[10px] text-twitch-text shrink-0 ml-auto pl-2">
-                            {chEffectivePct(ch.name)}%
-                          </span>
+                          <span className="text-[10px] text-twitch-text shrink-0 ml-auto pl-2">{chEffectivePct(ch.name)}%</span>
                         </div>
                       ))}
                     </div>
@@ -353,13 +250,10 @@ export default function Settings({ twitchUser, obsConnected }) {
               )}
             </div>
 
-            {/* Shuffle Bias */}
             <div className="border-t border-twitch-border pt-5 space-y-3">
               <div>
                 <label className="label mb-1 block">Shuffle Bias</label>
-                <p className="text-xs text-twitch-muted">
-                  Within each channel, boost clips that are more popular or more recent. Both can be active at once.
-                </p>
+                <p className="text-xs text-twitch-muted">Within each channel, boost clips that are more popular or more recent. Both can be active at once.</p>
               </div>
               <Toggle
                 label="Favor Popular"
@@ -374,20 +268,21 @@ export default function Settings({ twitchUser, obsConnected }) {
                 onChange={v => setOverlayConfig(p => ({ ...p, biasRecent: v }))}
               />
             </div>
-
           </div>
         </section>
 
-        {/* Overlay Visual Options */}
+        {/* Overlay Options */}
         <section className="card p-5">
           <div className="flex items-center justify-between mb-4">
             <h2 className="font-semibold text-twitch-text">Overlay Options</h2>
-            <button onClick={applyNow} className="text-xs text-twitch-purple hover:text-white transition-colors">
+            <button
+              onClick={() => { window.api.settings.set('overlayConfig', overlayConfig); window.api.overlay.sendConfig(overlayConfig) }}
+              className="text-xs text-twitch-purple hover:text-white transition-colors"
+            >
               Apply Now
             </button>
           </div>
           <div className="space-y-5">
-
             <Toggle
               label="Show info card"
               description="Display clip info on screen while playing"
@@ -409,7 +304,7 @@ export default function Settings({ twitchUser, obsConnected }) {
                 <div>
                   <label className="label">Card Size</label>
                   <select className="input" value={overlayConfig.cardSize} onChange={e => {
-                    const fonts = { compact: 13, normal: 16, large: 22 }
+                    const fonts = { compact: 14, normal: 18, large: 24 }
                     setOverlayConfig(p => ({ ...p, cardSize: e.target.value, fontSize: fonts[e.target.value] ?? p.fontSize }))
                   }}>
                     <option value="compact">Compact</option>
@@ -420,7 +315,7 @@ export default function Settings({ twitchUser, obsConnected }) {
               </div>
 
               <div>
-                <label className="label">Font Size ({overlayConfig.fontSize}px)</label>
+                <label className="label">Font Size ({(overlayConfig.fontSize * 0.1).toFixed(1)}vw)</label>
                 <input
                   type="range" min="12" max="36" step="1"
                   value={overlayConfig.fontSize}
@@ -482,8 +377,25 @@ export default function Settings({ twitchUser, obsConnected }) {
                   ))}
                 </div>
               </div>
+              <div className="border-t border-twitch-border pt-4 space-y-3">
+                <Toggle
+                  label="Force Proper Case"
+                  description="Reformat clip titles in title case"
+                  checked={overlayConfig.forceProper}
+                  onChange={v => setOverlayConfig(p => ({ ...p, forceProper: v, keepCaps: v ? p.keepCaps : false }))}
+                />
+                {overlayConfig.forceProper && (
+                  <div className="ml-4">
+                    <Toggle
+                      label="Keep Caps"
+                      description="Preserve ALL CAPS words as written"
+                      checked={overlayConfig.keepCaps}
+                      onChange={v => setOverlayConfig(p => ({ ...p, keepCaps: v }))}
+                    />
+                  </div>
+                )}
+              </div>
             </>}
-
           </div>
         </section>
 

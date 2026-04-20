@@ -98,12 +98,19 @@ function apiHeaders() {
   }
 }
 
-async function apiGet(path, params = {}) {
-  const res = await axios.get(`${TWITCH_API}${path}`, {
-    headers: apiHeaders(),
-    params
-  })
-  return res.data
+async function apiGet(path, params = {}, attempt = 0) {
+  try {
+    const res = await axios.get(`${TWITCH_API}${path}`, { headers: apiHeaders(), params })
+    return res.data
+  } catch (err) {
+    if (err.response?.status === 429 && attempt < 5) {
+      const reset = err.response.headers['ratelimit-reset']
+      const waitMs = reset ? Math.max(500, Number(reset) * 1000 - Date.now()) : 1000 * (attempt + 1)
+      await new Promise(r => setTimeout(r, waitMs))
+      return apiGet(path, params, attempt + 1)
+    }
+    throw err
+  }
 }
 
 export async function fetchCurrentUser() {

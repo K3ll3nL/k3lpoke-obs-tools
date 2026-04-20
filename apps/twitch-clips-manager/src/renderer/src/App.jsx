@@ -2,15 +2,17 @@ import React, { useEffect, useState } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import Nav from './components/Nav'
 import Setup from './pages/Setup'
-import Queue from './pages/Queue'
 import Updates from './pages/Updates'
 import Review from './pages/Review'
 import Settings from './pages/Settings'
+import Marketplace from './pages/Marketplace'
+import ClipSettings from './pages/ClipSettings'
 
 export default function App() {
   const [twitchUser, setTwitchUser] = useState(null)
   const [obsConnected, setObsConnected] = useState(false)
   const [ready, setReady] = useState(false)
+  const [subscribedIds, setSubscribedIds] = useState([])
 
   useEffect(() => {
     async function init() {
@@ -19,6 +21,9 @@ export default function App() {
 
       const obs = await window.api.obs.getStatus()
       if (obs.ok) setObsConnected(obs.data.connected)
+
+      const subs = await window.api.marketplace.getSubscribed()
+      if (subs.ok) setSubscribedIds(subs.data)
 
       setReady(true)
     }
@@ -40,14 +45,17 @@ export default function App() {
 
   return (
     <div className="flex h-screen bg-twitch-dark overflow-hidden">
-      {isSetup && <Nav obsConnected={obsConnected} twitchUser={twitchUser} />}
+      {isSetup && (
+        <Nav
+          obsConnected={obsConnected}
+          twitchUser={twitchUser}
+          subscribedIds={subscribedIds}
+        />
+      )}
       <main className="flex-1 overflow-hidden">
         <Routes>
           <Route path="/setup" element={
             <Setup twitchUser={twitchUser} obsConnected={obsConnected} />
-          } />
-          <Route path="/queue" element={
-            isSetup ? <Queue /> : <Navigate to="/setup" />
           } />
           <Route path="/updates" element={
             isSetup ? <Updates /> : <Navigate to="/setup" />
@@ -58,8 +66,16 @@ export default function App() {
           <Route path="/settings" element={
             <Settings twitchUser={twitchUser} obsConnected={obsConnected} />
           } />
+          <Route path="/clip-settings" element={
+            isSetup ? <ClipSettings /> : <Navigate to="/setup" />
+          } />
+          <Route path="/marketplace" element={
+            isSetup
+              ? <Marketplace subscribedIds={subscribedIds} onSubscriptionChange={setSubscribedIds} />
+              : <Navigate to="/setup" />
+          } />
           <Route path="*" element={
-            <Navigate to={isSetup ? '/queue' : '/setup'} />
+            <Navigate to={isSetup ? '/updates' : '/setup'} />
           } />
         </Routes>
       </main>

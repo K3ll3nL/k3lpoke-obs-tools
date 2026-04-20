@@ -13,7 +13,9 @@ contextBridge.exposeInMainWorld('api', {
     logout: () => invoke('twitch:logout'),
     fetchClips: (opts) => invoke('twitch:fetchClips', opts),
     fetchAllChannels: () => invoke('twitch:fetchAllChannels'),
-    onAuthChanged: (cb) => ipcRenderer.on('twitch:auth-changed', (_, d) => cb(d))
+    fetchNewClips: () => invoke('twitch:fetchNewClips'),
+    onAuthChanged: (cb) => ipcRenderer.on('twitch:auth-changed', (_, d) => cb(d)),
+    onNewClips: (cb) => ipcRenderer.on('twitch:new-clips', (_, d) => cb(d))
   },
 
   // Clips
@@ -71,5 +73,12 @@ contextBridge.exposeInMainWorld('api', {
   overlay: {
     getUrl: () => invoke('overlay:getUrl'),
     sendConfig: (config) => invoke('overlay:sendConfig', { config })
+  },
+
+  // Marketplace
+  marketplace: {
+    getSubscribed: () => invoke('marketplace:getSubscribed'),
+    subscribe:     (appId) => invoke('marketplace:subscribe', { appId }),
+    unsubscribe:   (appId) => invoke('marketplace:unsubscribe', { appId }),
   }
 })

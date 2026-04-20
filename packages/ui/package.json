@@ -1,0 +1,9 @@
+{
+  "name": "@k3lpoke/ui",
+  "version": "0.1.0",
+  "description": "Shared UI primitives and Tailwind preset for K3LPoke apps",
+  "main": "index.js",
+  "exports": {
+    "./tailwind": "./tailwind.preset.js"
+  }
+}

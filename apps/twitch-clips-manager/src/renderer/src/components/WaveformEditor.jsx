@@ -4,6 +4,8 @@ const CANVAS_H = 100
 const VOL_MAX = 2.0
 const HANDLE_R = 6
 const HIT_DIST = 12
+const PAD = HANDLE_R + 2        // keeps handles fully inside canvas at vol=0 and vol=MAX
+const INNER_H = CANVAS_H - 2 * PAD
 
 function fmtTime(secs) {
   const m = Math.floor(secs / 60)
@@ -52,13 +54,13 @@ export default function WaveformEditor({ clip, envelope: initEnvelope, onChange 
   }
 
   function toXY(time, volume, w) {
-    return { x: (time / dur) * w, y: CANVAS_H - (volume / VOL_MAX) * CANVAS_H }
+    return { x: (time / dur) * w, y: PAD + (1 - volume / VOL_MAX) * INNER_H }
   }
 
   function fromXY(x, y, w) {
     return {
       time:   Math.max(0, Math.min(dur,     (x / w) * dur)),
-      volume: Math.max(0, Math.min(VOL_MAX, (1 - y / CANVAS_H) * VOL_MAX))
+      volume: Math.max(0, Math.min(VOL_MAX, (1 - (y - PAD) / INNER_H) * VOL_MAX))
     }
   }
 
@@ -86,13 +88,13 @@ export default function WaveformEditor({ clip, envelope: initEnvelope, onChange 
       const bw = w / pks.length
       ctx.fillStyle = 'rgba(145,70,255,0.22)'
       pks.forEach((peak, i) => {
-        const bh = peak * CANVAS_H
-        ctx.fillRect(i * bw, CANVAS_H - bh, Math.max(1, bw - 0.5), bh)
+        const bh = peak * INNER_H
+        ctx.fillRect(i * bw, CANVAS_H - PAD - bh, Math.max(1, bw - 0.5), bh)
       })
     }
 
     // 100% reference line
-    const refY = CANVAS_H - (1.0 / VOL_MAX) * CANVAS_H
+    const refY = PAD + (1 - 1.0 / VOL_MAX) * INNER_H
     ctx.strokeStyle = 'rgba(255,255,255,0.1)'
     ctx.setLineDash([4, 4])
     ctx.lineWidth = 1

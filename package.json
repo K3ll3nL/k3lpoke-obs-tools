@@ -1,59 +1,11 @@
 {
-  "name": "twitch-clips-k3lpoke",
+  "name": "k3lpoke-marketplace",
   "version": "0.1.0",
-  "description": "Twitch clip queue manager with OBS Browser Source integration",
+  "description": "K3lPoke marketplace — core infrastructure and apps",
   "author": "K3lPoke",
-  "main": "out/main/index.js",
+  "private": true,
   "scripts": {
-    "dev": "electron-vite dev",
-    "build": "electron-vite build",
-    "make": "npm run build && electron-packager . \"Twitch Clip Queue\" --platform=win32 --arch=x64 --out=dist --overwrite --electron-path=./node_modules/electron/dist/electron.exe --app-version=0.1.0 --ignore=\"src|node_modules|\\.git\""
-  },
-  "build": {
-    "appId": "com.k3lpoke.twitch-clips",
-    "productName": "Twitch Clip Queue",
-    "directories": {
-      "output": "dist"
-    },
-    "electronDist": "./node_modules/electron/dist",
-    "files": [
-      "out/**/*"
-    ],
-    "extraResources": [
-      {
-        "from": "src/overlay",
-        "to": "overlay"
-      }
-    ],
-    "win": {
-      "target": "dir"
-    },
-    "mac": {
-      "target": "dmg"
-    },
-    "linux": {
-      "target": "AppImage"
-    }
-  },
-  "dependencies": {
-    "axios": "^1.7.2",
-    "cors": "^2.8.5",
-    "express": "^4.19.2",
-    "obs-websocket-js": "^5.0.3",
-    "ws": "^8.17.0"
-  },
-  "devDependencies": {
-    "@electron/packager": "^19.1.0",
-    "@vitejs/plugin-react": "^4.3.0",
-    "autoprefixer": "^10.4.19",
-    "electron": "^31.0.0",
-    "electron-builder": "^24.13.3",
-    "electron-vite": "^2.3.0",
-    "lucide-react": "^0.395.0",
-    "postcss": "^8.4.38",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "react-router-dom": "^6.23.1",
-    "tailwindcss": "^3.4.4"
+    "dev": "npm run dev --prefix apps/twitch-clips-manager",
+    "build": "npm run build --prefix apps/twitch-clips-manager"
   }
 }

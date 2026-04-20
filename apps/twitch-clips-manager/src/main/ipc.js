@@ -14,6 +14,41 @@ import {
   notifyQueueUpdated, broadcastVolumeChange, setMainWindow
 } from './server.js'
 
+export async function runAutoFetch(win) {
+  const channels = getChannels()
+  let totalAdded = 0
+  for (const ch of channels) {
+    // Use 5-minute buffer to avoid missing clips near boundary
+    const since = ch.last_fetched
+      ? new Date(new Date(ch.last_fetched).getTime() - 5 * 60 * 1000).toISOString()
+      : null
+    let cursor = null
+    try {
+      do {
+        const result = await fetchClips({
+          broadcasterId: ch.broadcaster_id,
+          cursor,
+          limit: 100,
+          startedAt: since ?? undefined
+        })
+        for (const clip of result.clips) {
+          if (!clipExists(clip.id)) { upsertClip(clip); totalAdded++ }
+        }
+        cursor = result.cursor
+        updateChannelCursor(ch.name, cursor)
+        if (cursor) await new Promise(r => setTimeout(r, 250))
+      } while (cursor)
+    } catch {
+      // skip failed channel, cursor already saved
+    }
+  }
+  if (totalAdded > 0) {
+    notifyQueueUpdated()
+    win?.webContents.send('twitch:new-clips', { count: totalAdded })
+  }
+  return totalAdded
+}
+
 function handle(channel, fn) {
   ipcMain.handle(channel, async (_, ...args) => {
     try {
@@ -65,16 +100,24 @@ export function registerIpcHandlers(mainWindow) {
     const channels = getChannels()
     const results = []
     for (const ch of channels) {
+      // Resume from saved cursor so an interrupted fetch picks up where it left off
+      let cursor = ch.last_cursor ?? null
+      let added = 0
       try {
-        const result = await fetchClips({ broadcasterId: ch.broadcaster_id, limit: 20 })
-        let added = 0
-        for (const clip of result.clips) {
-          if (!clipExists(clip.id)) { upsertClip(clip); added++ }
-        }
-        if (result.cursor) updateChannelCursor(ch.name, result.cursor)
+        do {
+          const result = await fetchClips({ broadcasterId: ch.broadcaster_id, cursor, limit: 100 })
+          for (const clip of result.clips) {
+            if (!clipExists(clip.id)) { upsertClip(clip); added++ }
+          }
+          cursor = result.cursor
+          // Persist cursor after every page — if interrupted, next run resumes here
+          updateChannelCursor(ch.name, cursor)
+          if (cursor) await new Promise(r => setTimeout(r, 250))
+        } while (cursor)
         results.push({ channel: ch.name, added })
       } catch (e) {
-        results.push({ channel: ch.name, error: e.message })
+        // Cursor is already saved — next fetch will resume from the last successful page
+        results.push({ channel: ch.name, added, error: e.message })
       }
     }
     notifyQueueUpdated()
@@ -189,4 +232,23 @@ export function registerIpcHandlers(mainWindow) {
   handle('overlay:sendConfig', ({ config }) => sendOverlayConfig(config))
 
   handle('clips:getVideoUrl', ({ id }) => getClipVideoUrl(id))
+
+  handle('twitch:fetchNewClips', async () => runAutoFetch(mainWindow))
+
+  // ── Marketplace ───────────────────────────────────────────────────────────
+
+  handle('marketplace:getSubscribed', () => {
+    const saved = getSetting('subscribedApps')
+    return Array.isArray(saved) ? saved : []
+  })
+
+  handle('marketplace:subscribe', ({ appId }) => {
+    const current = getSetting('subscribedApps') ?? []
+    if (!current.includes(appId)) setSetting('subscribedApps', [...current, appId])
+  })
+
+  handle('marketplace:unsubscribe', ({ appId }) => {
+    const current = getSetting('subscribedApps') ?? []
+    setSetting('subscribedApps', current.filter(id => id !== appId))
+  })
 }

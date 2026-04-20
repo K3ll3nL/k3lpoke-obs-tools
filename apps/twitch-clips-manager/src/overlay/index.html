@@ -44,9 +44,9 @@
     #overlay-info.top-left     { top: 0; left: 0; }
     #overlay-info.top-right    { top: 0; right: 0; text-align: right; }
 
-    #overlay-info.size-compact { padding: 6px 10px 10px; max-width: 45%; }
-    #overlay-info.size-normal  { padding: 10px 16px 14px; max-width: 65%; }
-    #overlay-info.size-large   { padding: 16px 24px 22px; max-width: 85%; }
+    #overlay-info.size-compact { padding: 1.5vh 2vw 2vh; width: 28vw; max-width: 45%; }
+    #overlay-info.size-normal  { padding: 2vh 2.5vw 2.5vh;   width: 40vw; max-width: 65%; }
+    #overlay-info.size-large   { padding: 2.5vh 3.5vw 3vh;   width: 58vw; max-width: 85%; }
 
     #clip-title {
       color: #fff;
@@ -100,18 +100,20 @@
     let overlayTimer = null
     let started      = false
     let wsRef        = null
+    let activeClip   = null
 
     // OBS reroute_audio captures the HTML video element's native audio output directly.
     // createMediaElementSource() disconnects that pipeline and routes through Web Audio,
     // which OBS cannot capture — so we must never use Web Audio API in this overlay.
     function applyVolume(slotIdx, vol) {
-      slots[slotIdx].video.volume = Math.min(1, Math.max(0, Number(vol) || 1))
+      const v = Number(vol)
+      slots[slotIdx].video.volume = Math.min(1, Math.max(0, isNaN(v) ? 1 : v))
     }
 
     let config = {
       showOverlay: true,
       position: 'bottom-left',
-      fontSize: 16,
+      fontSize: 20,
       cardSize: 'normal',
       displayMode: 'timed',
       displayDuration: 8,
@@ -121,6 +123,8 @@
       showViews: false,
       showDate: false,
       showDuration: false,
+      forceProper: false,
+      keepCaps: false,
       biasPopular: false,
       biasRecent: false,
       channelWeights: {},
@@ -137,12 +141,13 @@
       }
       info.className = `${config.position} size-${config.cardSize || 'normal'}`
       if (wasVisible) info.classList.add('visible')
-      titleEl.style.fontSize = config.fontSize + 'px'
-      metaEl.style.fontSize  = Math.max(10, config.fontSize - 3) + 'px'
+      titleEl.style.fontSize = (config.fontSize * 0.1).toFixed(1) + 'vw'
+      metaEl.style.fontSize  = (Math.max(8, config.fontSize - 4) * 0.1).toFixed(1) + 'vw'
       info.style.display = config.showOverlay ? '' : 'none'
       const biasChanged = prev.biasPopular !== config.biasPopular || prev.biasRecent !== config.biasRecent
       const weightsChanged = JSON.stringify(prev.channelWeights) !== JSON.stringify(config.channelWeights)
       if (biasChanged || weightsChanged) loadQueue()
+      if (activeClip && config.showOverlay) updateClipInfoText(activeClip)
     }
 
     function shuffle(arr) {
@@ -224,12 +229,29 @@
       return url
     }
 
-    function showClipInfo(clip) {
-      if (!config.showOverlay) return
-      clearTimeout(overlayTimer)
+    const MINOR_WORDS = new Set([
+      'a','an','the','and','but','or','nor','for','yet','so',
+      'at','by','in','of','on','to','up','as','via','per'
+    ])
 
-      titleEl.textContent = config.showTitle ? (clip.title || '') : ''
+    function formatTitle(title) {
+      if (!config.forceProper) return title
+      const words = title.split(/(\s+)/)
+      const tokens = words.filter(t => t.trim().length > 0)
+      return words.map((token, _, arr) => {
+        if (!token.trim()) return token
+        const isFirst = token === tokens[0]
+        const isLast  = token === tokens[tokens.length - 1]
+        if (config.keepCaps && /[a-zA-Z]/.test(token) && token === token.toUpperCase()) return token
+        const lower = token.charAt(0).toUpperCase() + token.slice(1).toLowerCase()
+        const word  = token.replace(/[^a-zA-Z]/g, '').toLowerCase()
+        if (!isFirst && !isLast && MINOR_WORDS.has(word)) return token.toLowerCase()
+        return lower
+      }).join('')
+    }
 
+    function updateClipInfoText(clip) {
+      titleEl.textContent = config.showTitle ? formatTitle(clip.title || '') : ''
       const parts = []
       if (config.showBroadcaster && clip.broadcaster_name) parts.push(clip.broadcaster_name)
       if (config.showCreator && clip.creator_name)
@@ -244,6 +266,12 @@
         parts.push(`${m}:${s.toString().padStart(2, '0')}`)
       }
       metaEl.innerHTML = parts.join(' &middot; ')
+    }
+
+    function showClipInfo(clip) {
+      if (!config.showOverlay) return
+      clearTimeout(overlayTimer)
+      updateClipInfoText(clip)
 
       info.classList.remove('visible')
       requestAnimationFrame(() => requestAnimationFrame(() => {
@@ -270,6 +298,7 @@
         .then(url => {
           nextVid.src = url
           nextVid.load()
+          if (clip.trim_start != null) nextVid.currentTime = clip.trim_start
           nextVid.volume = 0
           return { clip, slotIdx: nextSlotIdx }
         })
@@ -318,7 +347,6 @@
       video.addEventListener('ended', done, { once: true })
       video.addEventListener('error', done, { once: true })
       if (clip.trim_end != null || hasEnvelope) video.addEventListener('timeupdate', onTick)
-      if (clip.trim_start != null) video.currentTime = clip.trim_start
     }
 
     async function switchToPreloaded() {
@@ -342,9 +370,15 @@
       prevSlot.wrap.classList.remove('active')
       prevSlot.video.pause()
 
+      if (clip.trim_start != null) nextSlot.video.currentTime = clip.trim_start
       applyVolume(slotIdx, clip.volume)
+      if (clip.envelope?.length > 0) {
+        const envVol = getEnvelopeVol(clip.envelope, clip.trim_start ?? 0)
+        nextSlot.video.volume = Math.min(1, Math.max(0, (clip.volume ?? 1) * envVol))
+      }
       nextSlot.video.play().catch(() => {})
 
+      activeClip = clip
       activeClipId = clip.id
       notifyNowPlaying(clip)
       showClipInfo(clip)
@@ -368,9 +402,15 @@
         slot.video.src = url
         slot.video.load()
         slot.wrap.classList.add('active')
+        if (clip.trim_start != null) slot.video.currentTime = clip.trim_start
         applyVolume(activeSlot, clip.volume)
+        if (clip.envelope?.length > 0) {
+          const envVol = getEnvelopeVol(clip.envelope, clip.trim_start ?? 0)
+          slot.video.volume = Math.min(1, Math.max(0, (clip.volume ?? 1) * envVol))
+        }
         await slot.video.play()
 
+        activeClip = clip
         activeClipId = clip.id
         notifyNowPlaying(clip)
         showClipInfo(clip)

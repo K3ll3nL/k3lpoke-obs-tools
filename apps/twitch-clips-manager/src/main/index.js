@@ -4,7 +4,7 @@ import { fileURLToPath } from 'url'
 import { initDb, getSetting } from './db.js'
 import { initTwitch } from './twitch.js'
 import { startServer, broadcastToOverlay } from './server.js'
-import { registerIpcHandlers } from './ipc.js'
+import { registerIpcHandlers, runAutoFetch } from './ipc.js'
 import { onStatusChange, connectOBS } from './obs.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -68,6 +68,9 @@ app.whenReady().then(async () => {
     onStatusChange((status) => {
       win.webContents.send('obs:status-changed', status)
     })
+
+    // Hourly incremental clip fetch for all channels
+    setInterval(() => runAutoFetch(win), 60 * 60 * 1000)
 
     // Auto-reconnect OBS using saved credentials
     const obsHost = getSetting('obsHost')

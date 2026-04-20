@@ -1,15 +1,14 @@
-import React, { useEffect, useState, useMemo, useRef } from 'react'
-import { Check, X, ChevronDown, Search, Volume2, Scissors, Activity } from 'lucide-react'
-import { Link } from 'react-router-dom'
+import React, { useEffect, useState, useCallback, useRef } from 'react'
+import { RefreshCw, CheckCheck, XSquare, Check, X, ChevronDown, Eye, Volume2, Scissors, Activity } from 'lucide-react'
 import WaveformEditor from '../components/WaveformEditor'
 import TrimBar from '../components/TrimBar'
+import RightPanel from '../components/RightPanel'
 
 function duration(secs) {
   const m = Math.floor(secs / 60)
   const s = Math.round(secs % 60)
   return `${m}:${s.toString().padStart(2, '0')}`
 }
-
 
 function ClipRow({ clip, onStatusChange }) {
   const [expanded, setExpanded] = useState(false)
@@ -23,11 +22,8 @@ function ClipRow({ clip, onStatusChange }) {
   const [clipEnvelope, setClipEnvelope] = useState(clip.envelope ?? [])
   const [trimStart, setTrimStart] = useState(clip.trim_start ?? 0)
   const [trimEnd, setTrimEnd] = useState(clip.trim_end ?? clip.duration ?? 0)
+  const [status, setStatus] = useState(clip.status ?? 'pending')
   const videoRef = useRef(null)
-
-  async function saveVolume(val) {
-    await window.api.clips.setVolume(clip.id, val)
-  }
 
   async function saveTrim(start, end) {
     const clipDur = clip.duration ?? 0
@@ -36,6 +32,10 @@ function ClipRow({ clip, onStatusChange }) {
       start > 0 ? start : null,
       end < clipDur ? end : null
     )
+  }
+
+  async function saveVolume(val) {
+    await window.api.clips.setVolume(clip.id, val)
   }
 
   useEffect(() => {
@@ -47,7 +47,6 @@ function ClipRow({ clip, onStatusChange }) {
     }
     vid.addEventListener('loadedmetadata', onMeta)
     vid.addEventListener('timeupdate', onTick)
-    // If already loaded, seek immediately when trimStart changes
     if (vid.readyState >= 1) vid.currentTime = trimStart
     return () => {
       vid.removeEventListener('loadedmetadata', onMeta)
@@ -70,11 +69,13 @@ function ClipRow({ clip, onStatusChange }) {
 
   async function handleApprove() {
     await window.api.clips.approve(clip.id)
+    setStatus('approved')
     onStatusChange(clip.id, 'approved')
   }
 
   async function handleDeny() {
     await window.api.clips.deny(clip.id)
+    setStatus('denied')
     onStatusChange(clip.id, 'denied')
   }
 
@@ -95,7 +96,8 @@ function ClipRow({ clip, onStatusChange }) {
           <div className="flex-1 min-w-0 flex flex-col justify-center gap-0.5">
             <p className="text-sm font-medium text-twitch-text leading-snug truncate">{clip.title}</p>
             <p className="text-xs text-twitch-muted">
-              {clip.broadcaster_name} &middot; Clipped by <span className="text-twitch-purple">{clip.creator_name}</span>
+              <span className="text-twitch-text font-medium">{clip.broadcaster_name}</span>
+              {' '}&middot; Clipped by <span className="text-twitch-purple">{clip.creator_name}</span>
             </p>
             <p className="text-[11px] text-twitch-muted">
               {clip.view_count?.toLocaleString()} views &middot; {new Date(clip.created_at).toLocaleDateString()}
@@ -111,7 +113,7 @@ function ClipRow({ clip, onStatusChange }) {
             onClick={handleApprove}
             title="Approve"
             className={`w-8 h-8 rounded flex items-center justify-center transition-colors ${
-              clip.status === 'approved'
+              status === 'approved'
                 ? 'bg-green-600 text-white'
                 : 'bg-green-600/15 text-green-400 hover:bg-green-600 hover:text-white'
             }`}
@@ -122,7 +124,7 @@ function ClipRow({ clip, onStatusChange }) {
             onClick={handleDeny}
             title="Deny"
             className={`w-8 h-8 rounded flex items-center justify-center transition-colors ${
-              clip.status === 'denied'
+              status === 'denied'
                 ? 'bg-red-600 text-white'
                 : 'bg-red-600/15 text-red-400 hover:bg-red-600 hover:text-white'
             }`}
@@ -132,7 +134,7 @@ function ClipRow({ clip, onStatusChange }) {
         </div>
       </div>
 
-      {/* Expanded video + config */}
+      {/* Expanded video + volume */}
       {expanded && (
         <div className="border-t border-twitch-border">
           <div className="bg-black" style={{ aspectRatio: '16/9' }}>
@@ -205,160 +207,163 @@ function ClipRow({ clip, onStatusChange }) {
   )
 }
 
-export default function Review() {
-  const [channels, setChannels] = useState([])
-  const [selectedChannel, setSelectedChannel] = useState(null)
-  const [allClips, setAllClips] = useState([])
-  const [loading, setLoading] = useState(false)
-  const [sortBy, setSortBy] = useState('views')
-  const [search, setSearch] = useState('')
-  const [creatorFilter, setCreatorFilter] = useState('')
-  const [hideReviewed, setHideReviewed] = useState(false)
+export default function Updates() {
+  const [clips, setClips] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [fetching, setFetching] = useState(false)
+  const [checking, setChecking] = useState(false)
+  const [fetchResults, setFetchResults] = useState(null)
+  const [lastCheck, setLastCheck] = useState(null)
+  const lastCheckRef = useRef(null)
 
-  useEffect(() => {
-    window.api.channels.list().then(r => {
-      if (r.ok) {
-        setChannels(r.data)
-        if (r.data.length > 0) setSelectedChannel(r.data[0].name)
-      }
-    })
+  const load = useCallback(async (since) => {
+    const r = await window.api.clips.getNew(since)
+    if (r.ok) setClips(r.data)
   }, [])
 
   useEffect(() => {
-    if (!selectedChannel) return
-    loadClips()
-  }, [selectedChannel])
-
-  async function loadClips() {
-    setLoading(true)
-    const r = await window.api.clips.getAll(selectedChannel)
-    if (r.ok) setAllClips(r.data)
-    setLoading(false)
-  }
-
-  function handleStatusChange(id, newStatus) {
-    setAllClips(prev => prev.map(c => c.id === id ? { ...c, status: newStatus } : c))
-  }
-
-  function switchChannel(name) {
-    setSelectedChannel(name)
-    setSearch('')
-    setCreatorFilter('')
-  }
-
-  const creators = useMemo(() => {
-    const set = new Set(allClips.map(c => c.creator_name).filter(Boolean))
-    return [...set].sort()
-  }, [allClips])
-
-  const filteredClips = useMemo(() => {
-    let clips = [...allClips]
-    if (hideReviewed) clips = clips.filter(c => c.status === 'pending')
-    if (search) clips = clips.filter(c => c.title?.toLowerCase().includes(search.toLowerCase()))
-    if (creatorFilter) clips = clips.filter(c => c.creator_name === creatorFilter)
-    switch (sortBy) {
-      case 'views':  clips.sort((a, b) => (b.view_count || 0) - (a.view_count || 0)); break
-      case 'newest': clips.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)); break
-      case 'oldest': clips.sort((a, b) => new Date(a.created_at) - new Date(b.created_at)); break
-      case 'az':     clips.sort((a, b) => (a.title ?? '').localeCompare(b.title ?? '')); break
+    async function init() {
+      const r = await window.api.settings.get('lastUpdatesCheck')
+      const since = r.ok ? r.data : null
+      lastCheckRef.current = since
+      setLastCheck(since)
+      await load(since)
+      setLoading(false)
     }
-    return clips
-  }, [allClips, search, creatorFilter, sortBy, hideReviewed])
+    init()
+  }, [load])
+
+  useEffect(() => {
+    window.api.twitch.onNewClips(({ count }) => {
+      if (count > 0) load(lastCheckRef.current)
+    })
+  }, [load])
+
+  async function handleRefresh() {
+    setFetching(true)
+    setFetchResults(null)
+    const r = await window.api.twitch.fetchAllChannels()
+    if (r.ok) {
+      setFetchResults(r.data)
+      await load(lastCheck)
+    }
+    setFetching(false)
+  }
+
+  async function handleCheckNew() {
+    setChecking(true)
+    await window.api.twitch.fetchNewClips()
+    await load(lastCheck)
+    setChecking(false)
+  }
+
+  async function markSeen() {
+    const now = new Date().toISOString()
+    await window.api.settings.set('lastUpdatesCheck', now)
+    setLastCheck(now)
+    setClips([])
+    setFetchResults(null)
+  }
+
+  async function approveAll() {
+    const ids = clips.map(c => c.id)
+    await window.api.clips.bulkApprove(ids)
+    setClips([])
+  }
+
+  async function denyAll() {
+    const ids = clips.map(c => c.id)
+    await window.api.clips.bulkDeny(ids)
+    setClips([])
+  }
+
+  function handleStatusChange(id) {
+    setClips(prev => prev.filter(c => c.id !== id))
+  }
+
+  const sinceLabel = lastCheck
+    ? new Date(lastCheck).toLocaleString()
+    : 'the beginning'
 
   return (
     <div className="flex h-full">
-      {/* Channel sidebar */}
-      <aside className="w-52 border-r border-twitch-border bg-twitch-mid flex flex-col shrink-0">
-        <div className="px-4 py-4 border-b border-twitch-border">
-          <h2 className="font-semibold text-sm text-twitch-text">Channels</h2>
+    <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="flex items-center justify-between px-5 py-4 border-b border-twitch-border shrink-0">
+        <div>
+          <h1 className="font-bold text-lg text-twitch-text">Updates</h1>
+          <p className="text-xs text-twitch-muted">
+            {loading ? 'Loading...' : `${clips.length} new clip${clips.length !== 1 ? 's' : ''} since ${sinceLabel}`}
+          </p>
         </div>
-        <div className="flex-1 overflow-y-auto p-2 space-y-1">
-          {channels.map(ch => (
-            <button
-              key={ch.name}
-              onClick={() => switchChannel(ch.name)}
-              className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors ${
-                selectedChannel === ch.name
-                  ? 'bg-twitch-purple text-white'
-                  : 'text-twitch-muted hover:bg-twitch-surface hover:text-twitch-text'
-              }`}
-            >
-              <span className="font-medium">{ch.display_name || ch.name}</span>
-              {ch.is_own ? <span className="ml-1 text-[10px] opacity-70">you</span> : null}
+
+        <div className="flex items-center gap-2">
+          {clips.length > 0 && (
+            <>
+              <button className="btn-success flex items-center gap-1.5 text-xs" onClick={approveAll}>
+                <CheckCheck size={13} /> Approve All
+              </button>
+              <button className="btn-danger flex items-center gap-1.5 text-xs" onClick={denyAll}>
+                <XSquare size={13} /> Deny All
+              </button>
+            </>
+          )}
+          {clips.length > 0 && (
+            <button className="btn-ghost flex items-center gap-1.5 text-xs" onClick={markSeen}>
+              <Eye size={13} /> Mark Seen
             </button>
-          ))}
-          {channels.length === 0 && (
-            <div className="px-3 py-2 space-y-2">
-              <p className="text-xs text-twitch-muted">No channels yet.</p>
-              <Link to="/settings" className="text-xs text-twitch-purple hover:underline block">
-                Add channels in Settings →
-              </Link>
-            </div>
           )}
-        </div>
-      </aside>
-
-      {/* Main content */}
-      <div className="flex-1 flex flex-col overflow-hidden">
-        <div className="border-b border-twitch-border shrink-0 px-5 py-3 flex items-center gap-3 flex-wrap">
-          <h1 className="font-bold text-lg text-twitch-text shrink-0">Review</h1>
           <button
-            onClick={() => setHideReviewed(v => !v)}
-            className={`text-xs px-2.5 py-1 rounded border transition-colors ${
-              hideReviewed
-                ? 'bg-twitch-purple border-twitch-purple text-white'
-                : 'border-twitch-border text-twitch-muted hover:border-twitch-purple/50 hover:text-twitch-text'
-            }`}
+            className="btn-ghost flex items-center gap-1.5 text-sm"
+            onClick={handleCheckNew}
+            disabled={checking || fetching}
           >
-            Hide Reviewed
+            <RefreshCw size={14} className={checking ? 'animate-spin' : ''} />
+            {checking ? 'Checking...' : 'Check for New'}
           </button>
-          <div className="relative flex-1 min-w-32">
-            <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-twitch-muted pointer-events-none" />
-            <input
-              className="input pl-7 text-sm"
-              placeholder="Search clips..."
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-            />
-          </div>
-          <select className="input text-sm w-40" value={creatorFilter} onChange={e => setCreatorFilter(e.target.value)}>
-            <option value="">All creators</option>
-            {creators.map(c => <option key={c} value={c}>{c}</option>)}
-          </select>
-          <select className="input text-sm w-36" value={sortBy} onChange={e => setSortBy(e.target.value)}>
-            <option value="views">Most Popular</option>
-            <option value="newest">Newest</option>
-            <option value="oldest">Oldest</option>
-            <option value="az">A–Z</option>
-          </select>
-        </div>
-
-        <div className="flex-1 overflow-y-auto p-4 space-y-2">
-          {loading && <p className="text-twitch-muted text-sm text-center mt-8">Loading...</p>}
-
-          {!loading && filteredClips.length === 0 && (
-            <div className="text-center mt-16 space-y-2">
-              <p className="text-twitch-muted text-sm">No clips found.</p>
-              <p className="text-twitch-border text-xs">
-                {allClips.length === 0
-                  ? 'Check Updates to fetch new clips from your channels.'
-                  : 'Try adjusting your search or filters.'}
-              </p>
-            </div>
-          )}
-
-          {!loading && filteredClips.length > 0 && (
-            <p className="text-[11px] text-twitch-border mb-1">
-              {filteredClips.length} clip{filteredClips.length !== 1 ? 's' : ''}
-              {(search || creatorFilter) ? ' (filtered)' : ''}
-            </p>
-          )}
-
-          {filteredClips.map(clip => (
-            <ClipRow key={clip.id} clip={clip} onStatusChange={handleStatusChange} />
-          ))}
+          <button
+            className="btn-purple flex items-center gap-1.5 text-sm"
+            onClick={handleRefresh}
+            disabled={fetching || checking}
+          >
+            <RefreshCw size={14} className={fetching ? 'animate-spin' : ''} />
+            {fetching ? 'Fetching...' : 'Refresh All Channels'}
+          </button>
         </div>
       </div>
+
+      {fetchResults && (
+        <div className="mx-5 mt-3 shrink-0 flex flex-wrap gap-2">
+          {fetchResults.map(r => (
+            <span
+              key={r.channel}
+              className={`text-[11px] px-2 py-1 rounded border ${
+                r.error
+                  ? 'bg-red-600/10 border-red-600/30 text-red-400'
+                  : 'bg-twitch-surface border-twitch-border text-twitch-muted'
+              }`}
+            >
+              {r.channel}: {r.error ? `error` : `+${r.added} new`}
+            </span>
+          ))}
+        </div>
+      )}
+
+      <div className="flex-1 overflow-y-auto p-4 space-y-2">
+        {loading && <p className="text-twitch-muted text-sm text-center mt-8">Loading...</p>}
+
+        {!loading && clips.length === 0 && (
+          <div className="text-center mt-16 space-y-3">
+            <p className="text-twitch-muted text-sm">No new clips since {sinceLabel}.</p>
+            <p className="text-twitch-border text-xs">Hit "Refresh All Channels" to check for new clips from everyone you follow.</p>
+          </div>
+        )}
+
+        {clips.map(clip => (
+          <ClipRow key={clip.id} clip={clip} onStatusChange={handleStatusChange} />
+        ))}
+      </div>
+    </div>
+    <RightPanel />
     </div>
   )
 }
