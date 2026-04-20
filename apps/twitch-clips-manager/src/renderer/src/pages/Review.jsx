@@ -128,7 +128,7 @@ function ClipRow({ clip, onStatusChange, collections, onCollectionsChanged, sele
           <div className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-all cursor-pointer ${
             selected
               ? 'bg-twitch-purple border-twitch-purple'
-              : 'border-twitch-border bg-transparent ' + (selectionActive ? 'opacity-100' : 'opacity-0 group-hover:opacity-100')
+              : 'border-twitch-border bg-transparent hover:border-twitch-purple'
           }`}>
             {selected && <Check size={10} className="text-white" />}
           </div>
