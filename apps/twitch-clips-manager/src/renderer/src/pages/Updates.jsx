@@ -1,8 +1,7 @@
-import React, { useEffect, useState, useCallback, useRef } from 'react'
-import { RefreshCw, CheckCheck, XSquare, Check, X, ChevronDown, Eye, Volume2, Scissors, Activity } from 'lucide-react'
+import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react'
+import { RefreshCw, CheckCheck, XSquare, Check, X, ChevronDown, Eye, Volume2, Scissors, Activity, Tag } from 'lucide-react'
 import WaveformEditor from '../components/WaveformEditor'
 import TrimBar from '../components/TrimBar'
-import RightPanel from '../components/RightPanel'
 
 function duration(secs) {
   const m = Math.floor(secs / 60)
@@ -10,7 +9,7 @@ function duration(secs) {
   return `${m}:${s.toString().padStart(2, '0')}`
 }
 
-function ClipRow({ clip, onStatusChange }) {
+function ClipRow({ clip, onStatusChange, collections, selected, onToggleSelect, clipIndex, selectionActive }) {
   const [expanded, setExpanded] = useState(false)
   const [videoUrl, setVideoUrl] = useState(null)
   const [loadingUrl, setLoadingUrl] = useState(false)
@@ -27,11 +26,7 @@ function ClipRow({ clip, onStatusChange }) {
 
   async function saveTrim(start, end) {
     const clipDur = clip.duration ?? 0
-    await window.api.clips.setTrim(
-      clip.id,
-      start > 0 ? start : null,
-      end < clipDur ? end : null
-    )
+    await window.api.clips.setTrim(clip.id, start > 0 ? start : null, end < clipDur ? end : null)
   }
 
   async function saveVolume(val) {
@@ -42,9 +37,7 @@ function ClipRow({ clip, onStatusChange }) {
     const vid = videoRef.current
     if (!vid || !videoUrl) return
     const onMeta = () => { vid.currentTime = trimStart }
-    const onTick = () => {
-      if (vid.currentTime >= trimEnd) vid.pause()
-    }
+    const onTick = () => { if (vid.currentTime >= trimEnd) vid.pause() }
     vid.addEventListener('loadedmetadata', onMeta)
     vid.addEventListener('timeupdate', onTick)
     if (vid.readyState >= 1) vid.currentTime = trimStart
@@ -61,8 +54,7 @@ function ClipRow({ clip, onStatusChange }) {
       setLoadingUrl(true)
       setUrlError(null)
       const r = await window.api.clips.getVideoUrl(clip.id)
-      if (r.ok) setVideoUrl(r.data)
-      else setUrlError(r.error)
+      if (r.ok) setVideoUrl(r.data); else setUrlError(r.error)
       setLoadingUrl(false)
     }
   }
@@ -80,9 +72,25 @@ function ClipRow({ clip, onStatusChange }) {
   }
 
   return (
-    <div className={`rounded-lg border transition-colors overflow-hidden ${expanded ? 'border-twitch-purple' : 'border-twitch-border'} bg-twitch-surface`}>
-      {/* Card row */}
+    <div className={`group rounded-lg border transition-colors overflow-hidden ${
+      selected ? 'border-twitch-purple' : expanded ? 'border-twitch-purple' : 'border-twitch-border'
+    } bg-twitch-surface`}>
       <div className="flex">
+        {/* Checkbox */}
+        <div
+          className="flex items-center pl-3 shrink-0"
+          onClick={e => { e.stopPropagation(); onToggleSelect?.(clip.id, e.shiftKey, clipIndex) }}
+        >
+          <div className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-all cursor-pointer ${
+            selected
+              ? 'bg-twitch-purple border-twitch-purple'
+              : 'border-twitch-border bg-transparent ' + (selectionActive ? 'opacity-100' : 'opacity-0 group-hover:opacity-100')
+          }`}>
+            {selected && <Check size={10} className="text-white" />}
+          </div>
+        </div>
+
+        {/* Expand area */}
         <button className="flex-1 min-w-0 text-left flex gap-3 p-3 hover:bg-white/5 transition-colors" onClick={handleExpand}>
           <div className="relative shrink-0 w-32 h-[72px] rounded overflow-hidden bg-black">
             {clip.thumbnail_url
@@ -107,15 +115,13 @@ function ClipRow({ clip, onStatusChange }) {
           <ChevronDown size={16} className={`self-center shrink-0 mr-1 text-twitch-muted transition-transform duration-200 ${expanded ? 'rotate-180' : ''}`} />
         </button>
 
-        {/* Approve / Deny buttons */}
+        {/* Action buttons — always 3 slots for consistent height */}
         <div className="flex flex-col gap-1 justify-center px-3 border-l border-twitch-border shrink-0">
           <button
             onClick={handleApprove}
             title="Approve"
             className={`w-8 h-8 rounded flex items-center justify-center transition-colors ${
-              status === 'approved'
-                ? 'bg-green-600 text-white'
-                : 'bg-green-600/15 text-green-400 hover:bg-green-600 hover:text-white'
+              status === 'approved' ? 'bg-green-600 text-white' : 'bg-green-600/15 text-green-400 hover:bg-green-600 hover:text-white'
             }`}
           >
             <Check size={14} />
@@ -124,17 +130,17 @@ function ClipRow({ clip, onStatusChange }) {
             onClick={handleDeny}
             title="Deny"
             className={`w-8 h-8 rounded flex items-center justify-center transition-colors ${
-              status === 'denied'
-                ? 'bg-red-600 text-white'
-                : 'bg-red-600/15 text-red-400 hover:bg-red-600 hover:text-white'
+              status === 'denied' ? 'bg-red-600 text-white' : 'bg-red-600/15 text-red-400 hover:bg-red-600 hover:text-white'
             }`}
           >
             <X size={14} />
           </button>
+          {/* 3rd slot placeholder keeps heights consistent */}
+          <div className="w-8 h-8 invisible" aria-hidden />
         </div>
       </div>
 
-      {/* Expanded video + volume */}
+      {/* Expanded video + controls */}
       {expanded && (
         <div className="border-t border-twitch-border">
           <div className="bg-black" style={{ aspectRatio: '16/9' }}>
@@ -215,6 +221,20 @@ export default function Updates() {
   const [fetchResults, setFetchResults] = useState(null)
   const [lastCheck, setLastCheck] = useState(null)
   const lastCheckRef = useRef(null)
+  const [collections, setCollections] = useState([])
+
+  // Selection
+  const [selectedIds, setSelectedIds] = useState(new Set())
+  const lastSelIdxRef = useRef(null)
+  const [showAddToCol, setShowAddToCol] = useState(false)
+  const addToColRef = useRef(null)
+
+  useEffect(() => {
+    if (!showAddToCol) return
+    function h(e) { if (!addToColRef.current?.contains(e.target)) setShowAddToCol(false) }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [showAddToCol])
 
   const load = useCallback(async (since) => {
     const r = await window.api.clips.getNew(since)
@@ -231,6 +251,7 @@ export default function Updates() {
       setLoading(false)
     }
     init()
+    window.api.collections.list().then(r => { if (r.ok) setCollections(r.data) })
   }, [load])
 
   useEffect(() => {
@@ -263,107 +284,201 @@ export default function Updates() {
     setLastCheck(now)
     setClips([])
     setFetchResults(null)
+    setSelectedIds(new Set())
+    lastSelIdxRef.current = null
   }
 
   async function approveAll() {
     const ids = clips.map(c => c.id)
     await window.api.clips.bulkApprove(ids)
     setClips([])
+    setSelectedIds(new Set())
   }
 
   async function denyAll() {
     const ids = clips.map(c => c.id)
     await window.api.clips.bulkDeny(ids)
     setClips([])
+    setSelectedIds(new Set())
   }
 
   function handleStatusChange(id) {
     setClips(prev => prev.filter(c => c.id !== id))
+    setSelectedIds(prev => { const n = new Set(prev); n.delete(id); return n })
   }
 
-  const sinceLabel = lastCheck
-    ? new Date(lastCheck).toLocaleString()
-    : 'the beginning'
+  function handleToggleSelect(clipId, isShift, clipIdx) {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      if (isShift && lastSelIdxRef.current !== null) {
+        const lo = Math.min(lastSelIdxRef.current, clipIdx)
+        const hi = Math.max(lastSelIdxRef.current, clipIdx)
+        const selecting = !prev.has(clipId)
+        clips.slice(lo, hi + 1).forEach(c => selecting ? next.add(c.id) : next.delete(c.id))
+      } else {
+        next.has(clipId) ? next.delete(clipId) : next.add(clipId)
+      }
+      lastSelIdxRef.current = clipIdx
+      return next
+    })
+  }
+
+  async function approveSelected() {
+    const ids = [...selectedIds]
+    await window.api.clips.bulkApprove(ids)
+    setClips(prev => prev.filter(c => !ids.includes(c.id)))
+    setSelectedIds(new Set())
+    lastSelIdxRef.current = null
+  }
+
+  async function denySelected() {
+    const ids = [...selectedIds]
+    await window.api.clips.bulkDeny(ids)
+    setClips(prev => prev.filter(c => !ids.includes(c.id)))
+    setSelectedIds(new Set())
+    lastSelIdxRef.current = null
+  }
+
+  async function addSelectedToCollection(colId) {
+    const ids = [...selectedIds]
+    await window.api.clips.bulkApprove(ids)
+    for (const id of ids) await window.api.collections.addClip(colId, id)
+    setClips(prev => prev.filter(c => !ids.includes(c.id)))
+    setShowAddToCol(false)
+    setSelectedIds(new Set())
+    lastSelIdxRef.current = null
+  }
+
+  const sinceLabel = lastCheck ? new Date(lastCheck).toLocaleString() : 'the beginning'
+  const selectionActive = selectedIds.size > 0
 
   return (
     <div className="flex h-full">
-    <div className="flex-1 flex flex-col overflow-hidden">
-      <div className="flex items-center justify-between px-5 py-4 border-b border-twitch-border shrink-0">
-        <div>
-          <h1 className="font-bold text-lg text-twitch-text">Updates</h1>
-          <p className="text-xs text-twitch-muted">
-            {loading ? 'Loading...' : `${clips.length} new clip${clips.length !== 1 ? 's' : ''} since ${sinceLabel}`}
-          </p>
-        </div>
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-twitch-border shrink-0">
+          <div>
+            <h1 className="font-bold text-lg text-twitch-text">Updates</h1>
+            <p className="text-xs text-twitch-muted">
+              {loading ? 'Loading...' : `${clips.length} new clip${clips.length !== 1 ? 's' : ''} since ${sinceLabel}`}
+            </p>
+          </div>
 
-        <div className="flex items-center gap-2">
-          {clips.length > 0 && (
-            <>
-              <button className="btn-success flex items-center gap-1.5 text-xs" onClick={approveAll}>
-                <CheckCheck size={13} /> Approve All
+          <div className="flex items-center gap-2">
+            {clips.length > 0 && (
+              <>
+                <button className="btn-success flex items-center gap-1.5 text-xs" onClick={approveAll}>
+                  <CheckCheck size={13} /> Approve All
+                </button>
+                <button className="btn-danger flex items-center gap-1.5 text-xs" onClick={denyAll}>
+                  <XSquare size={13} /> Deny All
+                </button>
+              </>
+            )}
+            {clips.length > 0 && (
+              <button className="btn-ghost flex items-center gap-1.5 text-xs" onClick={markSeen}>
+                <Eye size={13} /> Mark Seen
               </button>
-              <button className="btn-danger flex items-center gap-1.5 text-xs" onClick={denyAll}>
-                <XSquare size={13} /> Deny All
-              </button>
-            </>
-          )}
-          {clips.length > 0 && (
-            <button className="btn-ghost flex items-center gap-1.5 text-xs" onClick={markSeen}>
-              <Eye size={13} /> Mark Seen
-            </button>
-          )}
-          <button
-            className="btn-ghost flex items-center gap-1.5 text-sm"
-            onClick={handleCheckNew}
-            disabled={checking || fetching}
-          >
-            <RefreshCw size={14} className={checking ? 'animate-spin' : ''} />
-            {checking ? 'Checking...' : 'Check for New'}
-          </button>
-          <button
-            className="btn-purple flex items-center gap-1.5 text-sm"
-            onClick={handleRefresh}
-            disabled={fetching || checking}
-          >
-            <RefreshCw size={14} className={fetching ? 'animate-spin' : ''} />
-            {fetching ? 'Fetching...' : 'Refresh All Channels'}
-          </button>
-        </div>
-      </div>
-
-      {fetchResults && (
-        <div className="mx-5 mt-3 shrink-0 flex flex-wrap gap-2">
-          {fetchResults.map(r => (
-            <span
-              key={r.channel}
-              className={`text-[11px] px-2 py-1 rounded border ${
-                r.error
-                  ? 'bg-red-600/10 border-red-600/30 text-red-400'
-                  : 'bg-twitch-surface border-twitch-border text-twitch-muted'
-              }`}
+            )}
+            <button
+              className="btn-ghost flex items-center gap-1.5 text-sm"
+              onClick={handleCheckNew}
+              disabled={checking || fetching}
             >
-              {r.channel}: {r.error ? `error` : `+${r.added} new`}
-            </span>
-          ))}
+              <RefreshCw size={14} className={checking ? 'animate-spin' : ''} />
+              {checking ? 'Checking...' : 'Check for New'}
+            </button>
+            <button
+              className="btn-purple flex items-center gap-1.5 text-sm"
+              onClick={handleRefresh}
+              disabled={fetching || checking}
+            >
+              <RefreshCw size={14} className={fetching ? 'animate-spin' : ''} />
+              {fetching ? 'Fetching...' : 'Refresh All Channels'}
+            </button>
+          </div>
         </div>
-      )}
 
-      <div className="flex-1 overflow-y-auto p-4 space-y-2">
-        {loading && <p className="text-twitch-muted text-sm text-center mt-8">Loading...</p>}
-
-        {!loading && clips.length === 0 && (
-          <div className="text-center mt-16 space-y-3">
-            <p className="text-twitch-muted text-sm">No new clips since {sinceLabel}.</p>
-            <p className="text-twitch-border text-xs">Hit "Refresh All Channels" to check for new clips from everyone you follow.</p>
+        {fetchResults && (
+          <div className="mx-5 mt-3 shrink-0 flex flex-wrap gap-2">
+            {fetchResults.map(r => (
+              <span
+                key={r.channel}
+                className={`text-[11px] px-2 py-1 rounded border ${
+                  r.error
+                    ? 'bg-red-600/10 border-red-600/30 text-red-400'
+                    : 'bg-twitch-surface border-twitch-border text-twitch-muted'
+                }`}
+              >
+                {r.channel}: {r.error ? 'error' : `+${r.added} new`}
+              </span>
+            ))}
           </div>
         )}
 
-        {clips.map(clip => (
-          <ClipRow key={clip.id} clip={clip} onStatusChange={handleStatusChange} />
-        ))}
+        {/* Selection action bar */}
+        {selectionActive && (
+          <div className="px-5 py-2 border-b border-twitch-border bg-twitch-surface/40 flex items-center gap-2 shrink-0 flex-wrap">
+            <span className="text-xs font-medium text-twitch-text">{selectedIds.size} selected</span>
+            <button onClick={approveSelected} className="btn-success text-xs py-1 px-2.5 flex items-center gap-1">
+              <Check size={11} /> Approve
+            </button>
+            <button onClick={denySelected} className="btn-danger text-xs py-1 px-2.5 flex items-center gap-1">
+              <X size={11} /> Deny
+            </button>
+            {collections.length > 0 && (
+              <div className="relative" ref={addToColRef}>
+                <button
+                  onClick={() => setShowAddToCol(v => !v)}
+                  className="btn-ghost text-xs py-1 px-2.5 flex items-center gap-1"
+                >
+                  <Tag size={11} /> Add to Collection <ChevronDown size={10} />
+                </button>
+                {showAddToCol && (
+                  <div className="absolute left-0 top-full mt-1 w-48 bg-twitch-mid border border-twitch-border rounded-lg shadow-xl z-50 py-1">
+                    {collections.map(col => (
+                      <button key={col.id} onClick={() => addSelectedToCollection(col.id)}
+                        className="w-full text-left px-3 py-1.5 text-sm flex items-center gap-2 hover:bg-twitch-surface transition-colors">
+                        <span className="w-2 h-2 rounded-full shrink-0" style={{ background: col.color }} />
+                        <span className="flex-1 truncate text-twitch-text">{col.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+            <button
+              onClick={() => { setSelectedIds(new Set()); lastSelIdxRef.current = null }}
+              className="ml-auto text-xs text-twitch-muted hover:text-twitch-text transition-colors"
+            >
+              Clear
+            </button>
+          </div>
+        )}
+
+        <div className="flex-1 overflow-y-auto p-4 space-y-2">
+          {loading && <p className="text-twitch-muted text-sm text-center mt-8">Loading...</p>}
+
+          {!loading && clips.length === 0 && (
+            <div className="text-center mt-16 space-y-3">
+              <p className="text-twitch-muted text-sm">No new clips since {sinceLabel}.</p>
+              <p className="text-twitch-border text-xs">Hit "Refresh All Channels" to check for new clips from everyone you follow.</p>
+            </div>
+          )}
+
+          {clips.map((clip, idx) => (
+            <ClipRow
+              key={clip.id}
+              clip={clip}
+              onStatusChange={handleStatusChange}
+              collections={collections}
+              selected={selectedIds.has(clip.id)}
+              onToggleSelect={handleToggleSelect}
+              clipIndex={idx}
+              selectionActive={selectionActive}
+            />
+          ))}
+        </div>
       </div>
-    </div>
-    <RightPanel />
     </div>
   )
 }

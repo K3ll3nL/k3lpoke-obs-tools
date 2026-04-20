@@ -1,5 +1,6 @@
-import React, { useEffect, useState, useRef } from 'react'
-import { Copy, Monitor, Check, Volume2, Lock, X, Scissors, Activity } from 'lucide-react'
+import React, { useEffect, useState, useRef, useMemo } from 'react'
+import { Copy, Monitor, Check, Volume2, Lock, X, Scissors, Activity, Layers, Shuffle } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import TrimBar from './TrimBar'
 import WaveformEditor from './WaveformEditor'
 
@@ -15,6 +16,7 @@ export default function RightPanel() {
   const [selectedScene, setSelectedScene] = useState('')
   const [copied, setCopied] = useState(false)
 
+  // Now Playing
   const [nowPlaying, setNowPlaying] = useState(null)
   const [npVolume, setNpVolume] = useState(1.0)
   const [locked, setLocked] = useState(false)
@@ -23,9 +25,20 @@ export default function RightPanel() {
   const [trimStart, setTrimStart] = useState(0)
   const [trimEnd, setTrimEnd] = useState(0)
   const [clipEnvelope, setClipEnvelope] = useState([])
-
   const pendingClip = useRef(null)
   const lockedRef = useRef(false)
+
+  // Collections / playback source
+  const [collections, setCollections] = useState([])
+  const [playMode, setPlayMode] = useState('single')
+  const [activeSingleId, setActiveSingleId] = useState('main')
+  const [weightedSets, setWeightedSets] = useState([])
+  const [configSaved, setConfigSaved] = useState(false)
+
+  const allCollections = useMemo(() => [
+    { id: 'main', name: 'Main Queue', color: '#9146ff' },
+    ...collections
+  ], [collections])
 
   function applyClip(clip) {
     setNowPlaying(clip)
@@ -51,11 +64,14 @@ export default function RightPanel() {
       if (r.ok && r.data.currentClip) applyClip(r.data.currentClip)
     })
     window.api.player.onNowPlaying(clip => {
-      if (lockedRef.current) {
-        pendingClip.current = clip
-      } else {
-        applyClip(clip)
-      }
+      if (lockedRef.current) { pendingClip.current = clip } else { applyClip(clip) }
+    })
+    window.api.collections.list().then(r => { if (r.ok) setCollections(r.data) })
+    window.api.playback.getConfig().then(r => {
+      if (!r.ok) return
+      setPlayMode(r.data.mode)
+      setActiveSingleId(r.data.activeCollectionId || 'main')
+      setWeightedSets(r.data.weightedSets || [])
     })
   }, [])
 
@@ -65,10 +81,7 @@ export default function RightPanel() {
     setNowPlaying(prev => prev ? { ...prev, volume: val } : prev)
   }
 
-  function onSliderFocus() {
-    lockedRef.current = true
-    setLocked(true)
-  }
+  function onSliderFocus() { lockedRef.current = true; setLocked(true) }
 
   function onSliderBlur(val) {
     saveNpVolume(val)
@@ -116,10 +129,48 @@ export default function RightPanel() {
     setTimeout(() => setCopied(false), 2000)
   }
 
+  // Playback config helpers
+  function isInWeightedSet(colId) {
+    return weightedSets.some(s => s.collectionId === colId)
+  }
+
+  function toggleWeightedSet(colId) {
+    setWeightedSets(prev =>
+      isInWeightedSet(colId)
+        ? prev.filter(s => s.collectionId !== colId)
+        : [...prev, { collectionId: colId, weight: 50 }]
+    )
+  }
+
+  function setWeight(colId, weight) {
+    setWeightedSets(prev =>
+      prev.map(s => s.collectionId === colId ? { ...s, weight: Math.max(1, Math.min(100, Number(weight) || 1)) } : s)
+    )
+  }
+
+  const totalWeight = weightedSets.reduce((s, w) => s + w.weight, 0)
+
+  async function savePlaybackConfig() {
+    await window.api.playback.setConfig({
+      mode: playMode,
+      activeCollectionId: playMode === 'single' ? activeSingleId : 'main',
+      weightedSets: playMode === 'weighted' ? weightedSets : []
+    })
+    setConfigSaved(true)
+    setTimeout(() => setConfigSaved(false), 2000)
+  }
+
+  async function handleSingleSwitch(id) {
+    setActiveSingleId(id)
+    await window.api.playback.setConfig({ mode: 'single', activeCollectionId: id, weightedSets: [] })
+    setPlayMode('single')
+  }
+
   return (
-    <aside className="w-72 border-l border-twitch-border flex flex-col bg-twitch-mid shrink-0">
+    <aside className="w-72 border-l border-twitch-border flex flex-col bg-twitch-mid shrink-0 overflow-y-auto">
+
       {/* Now Playing */}
-      <div className="px-4 py-4 border-b border-twitch-border overflow-y-auto">
+      <div className="px-4 py-4 border-b border-twitch-border shrink-0">
         <h2 className="font-semibold text-sm text-twitch-text flex items-center gap-1.5 mb-3">
           <Volume2 size={15} /> Now Playing
         </h2>
@@ -212,6 +263,99 @@ export default function RightPanel() {
         )}
       </div>
 
+      {/* Now Playing Source */}
+      <div className="px-4 py-4 border-b border-twitch-border shrink-0">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="font-semibold text-sm text-twitch-text flex items-center gap-1.5">
+            <Layers size={15} /> Now Playing Source
+          </h2>
+          <Link to="/collections" className="text-[10px] text-twitch-purple hover:underline shrink-0">Manage →</Link>
+        </div>
+
+        {/* Mode toggle */}
+        <div className="flex rounded-lg overflow-hidden border border-twitch-border mb-3">
+          <button
+            onClick={() => setPlayMode('single')}
+            className={`flex-1 py-1.5 text-xs font-medium transition-colors ${playMode === 'single' ? 'bg-twitch-purple text-white' : 'text-twitch-muted hover:text-twitch-text'}`}
+          >
+            Single
+          </button>
+          <button
+            onClick={() => setPlayMode('weighted')}
+            className={`flex-1 py-1.5 text-xs font-medium transition-colors flex items-center justify-center gap-1 ${playMode === 'weighted' ? 'bg-twitch-purple text-white' : 'text-twitch-muted hover:text-twitch-text'}`}
+          >
+            <Shuffle size={11} /> Weighted
+          </button>
+        </div>
+
+        {/* Single mode: quick-switch dropdown */}
+        {playMode === 'single' && (
+          <div className="space-y-1">
+            {allCollections.map(col => (
+              <button
+                key={col.id}
+                onClick={() => handleSingleSwitch(col.id)}
+                className={`w-full text-left px-2.5 py-1.5 rounded text-xs flex items-center gap-2 transition-colors ${
+                  activeSingleId === col.id
+                    ? 'bg-twitch-surface border border-twitch-purple/40 text-twitch-text'
+                    : 'text-twitch-muted hover:bg-twitch-surface/60 hover:text-twitch-text border border-transparent'
+                }`}
+              >
+                <span className="w-2 h-2 rounded-full shrink-0" style={{ background: col.color }} />
+                <span className="flex-1 truncate">{col.name}</span>
+                {activeSingleId === col.id && <Check size={11} className="text-twitch-purple shrink-0" />}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Weighted mode: sliders */}
+        {playMode === 'weighted' && (
+          <div className="space-y-2.5">
+            {allCollections.map(col => {
+              const inSet = isInWeightedSet(col.id)
+              const set = weightedSets.find(s => s.collectionId === col.id)
+              const pct = totalWeight > 0 && inSet ? Math.round((set.weight / totalWeight) * 100) : 0
+              return (
+                <div key={col.id}>
+                  <div className="flex items-center gap-2 mb-1">
+                    <button
+                      onClick={() => toggleWeightedSet(col.id)}
+                      className={`w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 transition-colors ${
+                        inSet ? 'bg-twitch-purple border-twitch-purple' : 'border-twitch-border hover:border-twitch-purple/50'
+                      }`}
+                    >
+                      {inSet && <Check size={9} className="text-white" />}
+                    </button>
+                    <span className="w-2 h-2 rounded-full shrink-0" style={{ background: col.color }} />
+                    <span className="flex-1 text-xs text-twitch-text truncate">{col.name}</span>
+                    {inSet && <span className="text-[10px] text-twitch-purple font-medium shrink-0">{pct}%</span>}
+                  </div>
+                  {inSet && (
+                    <input
+                      type="range" min="1" max="100"
+                      value={set.weight}
+                      onChange={e => setWeight(col.id, e.target.value)}
+                      className="w-full accent-twitch-purple"
+                    />
+                  )}
+                </div>
+              )
+            })}
+            {weightedSets.length === 0 && (
+              <p className="text-[11px] text-twitch-border">Check collections above to include them.</p>
+            )}
+            <button
+              onClick={savePlaybackConfig}
+              disabled={weightedSets.length === 0}
+              className="btn-purple w-full text-xs py-1.5 flex items-center justify-center gap-1 mt-1"
+            >
+              {configSaved ? <><Check size={11} /> Saved</> : 'Apply Mix'}
+            </button>
+          </div>
+        )}
+      </div>
+
       {/* OBS Setup */}
       <div className="px-4 py-4 border-b border-twitch-border shrink-0">
         <h2 className="font-semibold text-sm text-twitch-text flex items-center gap-1.5">
@@ -219,14 +363,7 @@ export default function RightPanel() {
         </h2>
       </div>
 
-      <div className="p-4 space-y-5 flex-1 overflow-y-auto">
-        <div className="card p-3 bg-twitch-surface border-twitch-purple/40">
-          <p className="text-xs text-twitch-purple font-semibold uppercase tracking-wide mb-1">How it works</p>
-          <p className="text-xs text-twitch-muted leading-relaxed">
-            Add the Browser Source to OBS once. Whenever the source is visible, it automatically plays your approved clips in a shuffled loop — no controls needed.
-          </p>
-        </div>
-
+      <div className="p-4 space-y-4 shrink-0">
         <div>
           <label className="label">Browser Source URL</label>
           <div className="flex gap-2">
@@ -235,9 +372,7 @@ export default function RightPanel() {
               {copied ? <Check size={14} className="text-green-400" /> : <Copy size={14} />}
             </button>
           </div>
-          <p className="text-[11px] text-twitch-muted mt-1">
-            In OBS: Add Source → Browser → paste this URL
-          </p>
+          <p className="text-[11px] text-twitch-muted mt-1">In OBS: Add Source → Browser → paste this URL</p>
         </div>
 
         <div>
@@ -257,9 +392,6 @@ export default function RightPanel() {
           >
             Add Browser Source to Scene
           </button>
-          <p className="text-[11px] text-twitch-muted mt-1">
-            Creates or updates "Twitch Clip Queue" in the selected scene.
-          </p>
         </div>
       </div>
     </aside>
