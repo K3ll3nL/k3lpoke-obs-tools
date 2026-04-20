@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react'
-import { Plus, Trash2, Check, X, Layers } from 'lucide-react'
+import { Plus, Trash2, Check, X, Layers, ChevronDown } from 'lucide-react'
 
 const PRESET_COLORS = ['#9146ff', '#0984e3', '#00b894', '#e17055', '#fd79a8', '#fdcb6e']
 
@@ -7,6 +7,73 @@ function duration(secs) {
   const m = Math.floor(secs / 60)
   const s = Math.round(secs % 60)
   return `${m}:${s.toString().padStart(2, '0')}`
+}
+
+function ClipCard({ clip, canRemove, onRemove, onDragStart }) {
+  const [expanded, setExpanded] = useState(false)
+  const [videoUrl, setVideoUrl] = useState(null)
+  const [loadingUrl, setLoadingUrl] = useState(false)
+  const [urlError, setUrlError] = useState(null)
+  const videoRef = useRef(null)
+
+  async function handleExpand() {
+    const open = !expanded
+    setExpanded(open)
+    if (open && !videoUrl) {
+      setLoadingUrl(true)
+      setUrlError(null)
+      const r = await window.api.clips.getVideoUrl(clip.id)
+      if (r.ok) setVideoUrl(r.data); else setUrlError(r.error)
+      setLoadingUrl(false)
+    }
+  }
+
+  return (
+    <div
+      draggable
+      onDragStart={onDragStart}
+      className={`rounded-lg border transition-colors overflow-hidden bg-twitch-surface ${expanded ? 'border-twitch-purple' : 'border-twitch-border'}`}
+    >
+      <div className="flex items-center gap-3 p-3">
+        <div className="relative shrink-0 w-24 h-[54px] rounded overflow-hidden bg-black cursor-grab active:cursor-grabbing">
+          {clip.thumbnail_url
+            ? <img src={clip.thumbnail_url} alt="" className="w-full h-full object-cover" />
+            : <div className="w-full h-full bg-twitch-mid" />}
+          {clip.duration != null && (
+            <span className="absolute bottom-0.5 right-0.5 bg-black/70 text-white text-[9px] px-0.5 rounded">
+              {duration(clip.duration)}
+            </span>
+          )}
+        </div>
+        <button className="flex-1 min-w-0 text-left" onClick={handleExpand}>
+          <p className="text-sm font-medium text-twitch-text truncate">{clip.title}</p>
+          <p className="text-xs text-twitch-muted">{clip.broadcaster_name}</p>
+        </button>
+        {canRemove && (
+          <button
+            onClick={e => { e.stopPropagation(); onRemove() }}
+            title="Remove from collection"
+            className="shrink-0 w-7 h-7 rounded flex items-center justify-center text-twitch-muted hover:text-red-400 hover:bg-red-400/10 transition-colors"
+          >
+            <X size={13} />
+          </button>
+        )}
+        <button onClick={handleExpand} className="shrink-0 text-twitch-muted hover:text-twitch-text transition-colors">
+          <ChevronDown size={15} className={`transition-transform duration-200 ${expanded ? 'rotate-180' : ''}`} />
+        </button>
+      </div>
+
+      {expanded && (
+        <div className="border-t border-twitch-border">
+          <div className="bg-black" style={{ aspectRatio: '16/9' }}>
+            {loadingUrl && <div className="w-full h-full flex items-center justify-center text-twitch-muted text-sm">Loading video...</div>}
+            {urlError && <div className="w-full h-full flex items-center justify-center text-red-400 text-sm px-4 text-center">{urlError}</div>}
+            {videoUrl && <video ref={videoRef} key={videoUrl} className="w-full h-full" controls autoPlay src={videoUrl} />}
+          </div>
+        </div>
+      )}
+    </div>
+  )
 }
 
 function ColorPicker({ value, onChange }) {
@@ -237,36 +304,13 @@ export default function Collections() {
           )}
 
           {!clipsLoading && clips.map(clip => (
-            <div
+            <ClipCard
               key={clip.id}
-              draggable
+              clip={clip}
+              canRemove={selectedId !== 'main'}
+              onRemove={() => handleRemoveClip(clip.id)}
               onDragStart={e => onDragStart(e, clip.id)}
-              className="flex items-center gap-3 p-3 rounded-lg border border-twitch-border bg-twitch-surface cursor-grab active:cursor-grabbing"
-            >
-              <div className="relative shrink-0 w-24 h-[54px] rounded overflow-hidden bg-black">
-                {clip.thumbnail_url
-                  ? <img src={clip.thumbnail_url} alt="" className="w-full h-full object-cover" />
-                  : <div className="w-full h-full bg-twitch-mid" />}
-                {clip.duration != null && (
-                  <span className="absolute bottom-0.5 right-0.5 bg-black/70 text-white text-[9px] px-0.5 rounded">
-                    {duration(clip.duration)}
-                  </span>
-                )}
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-twitch-text truncate">{clip.title}</p>
-                <p className="text-xs text-twitch-muted">{clip.broadcaster_name}</p>
-              </div>
-              {selectedId !== 'main' && (
-                <button
-                  onClick={() => handleRemoveClip(clip.id)}
-                  title="Remove from collection"
-                  className="shrink-0 w-7 h-7 rounded flex items-center justify-center text-twitch-muted hover:text-red-400 hover:bg-red-400/10 transition-colors"
-                >
-                  <X size={13} />
-                </button>
-              )}
-            </div>
+            />
           ))}
         </div>
       </div>
