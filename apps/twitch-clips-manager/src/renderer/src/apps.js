@@ -1,4 +1,4 @@
-import { Bell, ClipboardCheck, Settings } from 'lucide-react'
+import { Bell, ClipboardCheck, Settings, ListVideo, Layers } from 'lucide-react'
 
 /**
  * Central registry of all K3LPoke apps.
@@ -18,9 +18,11 @@ export const APP_REGISTRY = [
     core: true,
     version: '0.1.0',
     navItems: [
-      { to: '/updates',       icon: Bell,           label: 'Updates'  },
-      { to: '/review',        icon: ClipboardCheck, label: 'Review'   },
-      { to: '/clip-settings', icon: Settings,       label: 'Settings' },
+      { to: '/updates',     icon: Bell,           label: 'Updates'     },
+      { to: '/review',      icon: ClipboardCheck, label: 'Review'      },
+      { to: '/queue',       icon: ListVideo,      label: 'Queue'       },
+      { to: '/collections', icon: Layers,         label: 'Collections' },
+      { to: '/clip-settings', icon: Settings,     label: 'Settings'    },
     ],
   },
   {

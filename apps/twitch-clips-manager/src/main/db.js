@@ -3,16 +3,18 @@ import path from 'path'
 import { app } from 'electron'
 
 let dbPath
-let data = { clips: [], channels: [], settings: {} }
+let data = { clips: [], channels: [], settings: {}, collections: [], playbackConfig: null }
 
 export function initDb() {
   dbPath = path.join(app.getPath('userData'), 'clipqueue.json')
   if (fs.existsSync(dbPath)) {
     try { data = JSON.parse(fs.readFileSync(dbPath, 'utf8')) } catch {}
   }
-  data.clips    ??= []
-  data.channels ??= []
-  data.settings ??= {}
+  data.clips         ??= []
+  data.channels      ??= []
+  data.settings      ??= {}
+  data.collections   ??= []
+  data.playbackConfig ??= { mode: 'single', activeCollectionId: 'main', weightedSets: [] }
 }
 
 function save() {
@@ -107,6 +109,72 @@ export function reorderQueue(orderedIds) {
     const clip = data.clips.find(c => c.id === id)
     if (clip) clip.queue_position = i + 1
   })
+  save()
+}
+
+// ── Collections ───────────────────────────────────────────────────────────
+
+export function getCollections() {
+  return [...data.collections]
+}
+
+export function createCollection({ name, color }) {
+  const id = `col_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+  const col = { id, name, color: color ?? '#9146ff', clipIds: [] }
+  data.collections.push(col)
+  save()
+  return col
+}
+
+export function updateCollection(id, updates) {
+  const col = data.collections.find(c => c.id === id)
+  if (!col) return null
+  if (updates.name  !== undefined) col.name  = updates.name
+  if (updates.color !== undefined) col.color = updates.color
+  save()
+  return { ...col }
+}
+
+export function deleteCollection(id) {
+  data.collections = data.collections.filter(c => c.id !== id)
+  if (data.playbackConfig.activeCollectionId === id) data.playbackConfig.activeCollectionId = 'main'
+  data.playbackConfig.weightedSets = (data.playbackConfig.weightedSets || []).filter(s => s.collectionId !== id)
+  save()
+}
+
+export function addClipToCollection(collectionId, clipId) {
+  const col = data.collections.find(c => c.id === collectionId)
+  if (!col || col.clipIds.includes(clipId)) return
+  col.clipIds.push(clipId)
+  save()
+}
+
+export function removeClipFromCollection(collectionId, clipId) {
+  const col = data.collections.find(c => c.id === collectionId)
+  if (!col) return
+  col.clipIds = col.clipIds.filter(id => id !== clipId)
+  save()
+}
+
+export function getCollectionClips(collectionId) {
+  const col = data.collections.find(c => c.id === collectionId)
+  if (!col) return []
+  const approvedMap = new Map(data.clips.filter(c => c.status === 'approved').map(c => [c.id, c]))
+  return col.clipIds.map(id => approvedMap.get(id)).filter(Boolean)
+}
+
+export function getCollectionMemberships(clipId) {
+  return data.collections.filter(c => c.clipIds.includes(clipId)).map(c => c.id)
+}
+
+// ── Playback config ────────────────────────────────────────────────────────
+
+export function getPlaybackConfig() {
+  return { ...data.playbackConfig }
+}
+
+export function setPlaybackConfig(config) {
+  data.playbackConfig = { ...data.playbackConfig, ...config }
   save()
 }
 

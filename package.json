@@ -5,7 +5,10 @@
   "author": "K3lPoke",
   "private": true,
   "scripts": {
-    "dev": "npm run dev --prefix apps/twitch-clips-manager",
-    "build": "npm run build --prefix apps/twitch-clips-manager"
+    "dev": "turbo dev",
+    "build": "turbo build"
+  },
+  "devDependencies": {
+    "turbo": "latest"
   }
 }

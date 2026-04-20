@@ -7,11 +7,15 @@ import { connectOBS, disconnectOBS, isConnected, getSceneList, addBrowserSource 
 import {
   getClipsByStatus, getAllClips, getNewClips, setClipStatus, bulkSetStatus, removeClip, reorderQueue,
   upsertClip, clipExists, getChannels, upsertChannel, removeChannel,
-  updateChannelCursor, getSetting, setSetting, getAllSettings, setClipVolume, setClipTrim, setClipEnvelope
+  updateChannelCursor, getSetting, setSetting, getAllSettings, setClipVolume, setClipTrim, setClipEnvelope,
+  getCollections, createCollection, updateCollection, deleteCollection,
+  addClipToCollection, removeClipFromCollection, getCollectionClips, getCollectionMemberships,
+  getPlaybackConfig, setPlaybackConfig
 } from './db.js'
 import {
   playClip, stopPlayer, getPlayerState, getOverlayUrl, sendOverlayConfig,
-  notifyQueueUpdated, broadcastVolumeChange, setMainWindow
+  notifyQueueUpdated, broadcastVolumeChange, setMainWindow,
+  broadcastPlaybackConfigUpdated, broadcastCollectionsUpdated
 } from './server.js'
 
 export async function runAutoFetch(win) {
@@ -234,6 +238,46 @@ export function registerIpcHandlers(mainWindow) {
   handle('clips:getVideoUrl', ({ id }) => getClipVideoUrl(id))
 
   handle('twitch:fetchNewClips', async () => runAutoFetch(mainWindow))
+
+  // ── Marketplace ───────────────────────────────────────────────────────────
+
+  // ── Collections ───────────────────────────────────────────────────────────
+  handle('collections:list', () => {
+    const cols = getCollections()
+    const approvedIds = new Set(getClipsByStatus('approved').map(c => c.id))
+    return cols.map(c => ({ ...c, clipCount: c.clipIds.filter(id => approvedIds.has(id)).length }))
+  })
+
+  handle('collections:create', ({ name, color }) => createCollection({ name, color }))
+
+  handle('collections:update', ({ id, name, color }) => updateCollection(id, { name, color }))
+
+  handle('collections:delete', ({ id }) => {
+    deleteCollection(id)
+    broadcastPlaybackConfigUpdated()
+  })
+
+  handle('collections:addClip', ({ collectionId, clipId }) => {
+    addClipToCollection(collectionId, clipId)
+    broadcastCollectionsUpdated()
+  })
+
+  handle('collections:removeClip', ({ collectionId, clipId }) => {
+    removeClipFromCollection(collectionId, clipId)
+    broadcastCollectionsUpdated()
+  })
+
+  handle('collections:getClips', ({ collectionId }) => getCollectionClips(collectionId))
+
+  handle('collections:getMemberships', ({ clipId }) => getCollectionMemberships(clipId))
+
+  // ── Playback config ───────────────────────────────────────────────────────
+  handle('playback:getConfig', () => getPlaybackConfig())
+
+  handle('playback:setConfig', (config) => {
+    setPlaybackConfig(config)
+    broadcastPlaybackConfigUpdated()
+  })
 
   // ── Marketplace ───────────────────────────────────────────────────────────
 

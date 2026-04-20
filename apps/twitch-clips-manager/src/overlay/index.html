@@ -92,8 +92,10 @@
       { wrap: document.getElementById('slot-b'), video: document.getElementById('video-b') }
     ]
 
-    let queue        = []
-    let idx          = 0
+    // Per-collection queues: { [collectionId]: shuffledClips[] }
+    let colQueues    = {}
+    let colIndices   = {}
+    let playCfg      = { mode: 'single', activeCollectionId: 'main', weightedSets: [], collections: [] }
     let activeSlot   = 0
     let activeClipId = null
     let nextPreload  = null   // Promise<{clip, slotIdx}|null>
@@ -146,7 +148,7 @@
       info.style.display = config.showOverlay ? '' : 'none'
       const biasChanged = prev.biasPopular !== config.biasPopular || prev.biasRecent !== config.biasRecent
       const weightsChanged = JSON.stringify(prev.channelWeights) !== JSON.stringify(config.channelWeights)
-      if (biasChanged || weightsChanged) loadQueue()
+      if (biasChanged || weightsChanged) loadPlaybackConfig()
       if (activeClip && config.showOverlay) updateClipInfoText(activeClip)
     }
 
@@ -206,19 +208,52 @@
       return scored.sort((a, b) => a.key - b.key).map(s => s.clip)
     }
 
-    async function loadQueue() {
+    async function loadPlaybackConfig() {
       try {
-        const res = await fetch(`${API}/api/queue`)
-        const { clips } = await res.json()
-        queue = biasedShuffle(clips || [])
-        idx = 0
-      } catch { queue = [] }
+        const res = await fetch(`${API}/api/playback-config`)
+        const data = await res.json()
+        playCfg = data
+        const prevIndices = { ...colIndices }
+        colQueues = {}
+        colIndices = {}
+        for (const col of (data.collections || [])) {
+          colQueues[col.id]  = biasedShuffle(col.clips || [])
+          colIndices[col.id] = prevIndices[col.id] ?? 0
+        }
+      } catch {
+        playCfg   = { mode: 'single', activeCollectionId: 'main', weightedSets: [], collections: [] }
+        colQueues  = {}
+        colIndices = {}
+      }
+    }
+
+    function hasAnyClips() {
+      return Object.values(colQueues).some(q => q.length > 0)
+    }
+
+    function pickCollectionId() {
+      if (playCfg.mode !== 'weighted') {
+        return playCfg.activeCollectionId || 'main'
+      }
+      const sets = (playCfg.weightedSets || []).filter(s => colQueues[s.collectionId]?.length > 0 && s.weight > 0)
+      if (!sets.length) return 'main'
+      const total = sets.reduce((s, w) => s + w.weight, 0)
+      let rand = Math.random() * total
+      for (const set of sets) {
+        rand -= set.weight
+        if (rand <= 0) return set.collectionId
+      }
+      return sets[sets.length - 1].collectionId
     }
 
     function takeNextClip() {
-      if (!queue.length) return null
-      const clip = queue[idx % queue.length]
-      idx++
+      const colId = pickCollectionId()
+      const q = colQueues[colId] || colQueues['main']
+      if (!q || !q.length) return null
+      const effectiveId = colQueues[colId]?.length ? colId : 'main'
+      const idx = colIndices[effectiveId] ?? 0
+      const clip = (colQueues[effectiveId])[idx % colQueues[effectiveId].length]
+      colIndices[effectiveId] = idx + 1
       return clip
     }
 
@@ -354,8 +389,7 @@
       nextPreload = null
 
       if (!preloaded) {
-        // Preload failed — reload queue and begin fresh
-        await loadQueue()
+        await loadPlaybackConfig()
         begin()
         return
       }
@@ -387,9 +421,9 @@
     }
 
     async function begin() {
-      if (!queue.length) {
-        await loadQueue()
-        if (!queue.length) { setTimeout(begin, 10000); return }
+      if (!hasAnyClips()) {
+        await loadPlaybackConfig()
+        if (!hasAnyClips()) { setTimeout(begin, 10000); return }
       }
 
       const clip = takeNextClip()
@@ -436,10 +470,15 @@
       ws.onmessage = e => {
         try {
           const msg = JSON.parse(e.data)
-          if (msg.type === 'queue-updated') loadQueue()
+          if (msg.type === 'queue-updated') loadPlaybackConfig()
+          if (msg.type === 'collections-updated') loadPlaybackConfig()
+          if (msg.type === 'playback-config-updated') {
+            nextPreload = null   // cancel preloaded clip so next pick uses new config
+            loadPlaybackConfig()
+          }
           if (msg.type === 'config') applyConfig(msg.config)
           if (msg.type === 'stop') {
-            queue = []; nextPreload = null
+            colQueues = {}; colIndices = {}; nextPreload = null
             slots.forEach(s => { s.video.pause(); s.video.src = '' })
           }
           if (msg.type === 'volume-update' && msg.clipId === activeClipId) {
