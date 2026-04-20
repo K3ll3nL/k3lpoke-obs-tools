@@ -6,7 +6,7 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import { app as electronApp } from 'electron'
 import { getClipVideoUrl } from './twitch.js'
-import { getClipsByStatus, getClipById, getSetting } from './db.js'
+import { getClipsByStatus, getClipById, getSetting, getCollections, getPlaybackConfig } from './db.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -34,6 +34,20 @@ if (electronApp.isPackaged) {
 // Approved clip queue — overlay fetches this on load
 app.get('/api/queue', (req, res) => {
   res.json({ clips: getClipsByStatus('approved') })
+})
+
+// Playback config + resolved collection clips — overlay fetches on load and on config change
+app.get('/api/playback-config', (req, res) => {
+  const cfg = getPlaybackConfig()
+  const approved = getClipsByStatus('approved')
+  const approvedMap = new Map(approved.map(c => [c.id, c]))
+  const namedCollections = getCollections().map(col => ({
+    id: col.id,
+    name: col.name,
+    color: col.color,
+    clips: col.clipIds.map(id => approvedMap.get(id)).filter(Boolean)
+  }))
+  res.json({ ...cfg, collections: [{ id: 'main', name: 'Main Queue', clips: approved }, ...namedCollections] })
 })
 
 // Signed video URL for a clip — overlay fetches per-clip before playing
@@ -122,6 +136,14 @@ export function notifyQueueUpdated() {
 
 export function broadcastVolumeChange(clipId, volume) {
   broadcastToOverlay({ type: 'volume-update', clipId, volume })
+}
+
+export function broadcastPlaybackConfigUpdated() {
+  broadcastToOverlay({ type: 'playback-config-updated' })
+}
+
+export function broadcastCollectionsUpdated() {
+  broadcastToOverlay({ type: 'collections-updated' })
 }
 
 // ── Start server ────────────────────────────────────────────────────────────

@@ -80,5 +80,23 @@ contextBridge.exposeInMainWorld('api', {
     getSubscribed: () => invoke('marketplace:getSubscribed'),
     subscribe:     (appId) => invoke('marketplace:subscribe', { appId }),
     unsubscribe:   (appId) => invoke('marketplace:unsubscribe', { appId }),
+  },
+
+  // Collections
+  collections: {
+    list:           ()                         => invoke('collections:list'),
+    create:         (name, color)              => invoke('collections:create', { name, color }),
+    update:         (id, name, color)          => invoke('collections:update', { id, name, color }),
+    delete:         (id)                       => invoke('collections:delete', { id }),
+    addClip:        (collectionId, clipId)     => invoke('collections:addClip', { collectionId, clipId }),
+    removeClip:     (collectionId, clipId)     => invoke('collections:removeClip', { collectionId, clipId }),
+    getClips:       (collectionId)             => invoke('collections:getClips', { collectionId }),
+    getMemberships: (clipId)                   => invoke('collections:getMemberships', { clipId }),
+  },
+
+  // Playback config
+  playback: {
+    getConfig: ()       => invoke('playback:getConfig'),
+    setConfig: (config) => invoke('playback:setConfig', config),
   }
 })

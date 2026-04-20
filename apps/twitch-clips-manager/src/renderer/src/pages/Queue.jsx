@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react'
-import { Copy, Monitor, Trash2, Check, Volume2, Lock, X } from 'lucide-react'
+import { Copy, Monitor, Trash2, Check, Volume2, Lock, X, Layers } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import ClipCard from '../components/ClipCard'
 
 function duration(secs) {
@@ -16,6 +17,10 @@ export default function Queue() {
   const [copied, setCopied] = useState(false)
   const [loading, setLoading] = useState(true)
 
+  // Collections / playback source
+  const [collections, setCollections] = useState([])
+  const [playCfg, setPlayCfg] = useState({ mode: 'single', activeCollectionId: 'main' })
+
   // Now Playing
   const [nowPlaying, setNowPlaying] = useState(null)
   const [npVolume, setNpVolume] = useState(1.0)
@@ -30,6 +35,14 @@ export default function Queue() {
 
   useEffect(() => {
     reload().then(() => setLoading(false))
+
+    window.api.collections.list().then(r => {
+      if (r.ok) setCollections(r.data)
+    })
+    window.api.playback.getConfig().then(r => {
+      if (r.ok) setPlayCfg(r.data)
+    })
+
     window.api.overlay.getUrl().then(r => { if (r.ok) setObsUrl(r.data) })
     window.api.obs.getScenes().then(r => {
       if (r.ok) {
@@ -139,6 +152,35 @@ export default function Queue() {
 
       {/* Right panel */}
       <aside className="w-72 border-l border-twitch-border flex flex-col bg-twitch-mid shrink-0">
+
+        {/* Now Playing Source */}
+        <div className="px-4 py-3 border-b border-twitch-border">
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="font-semibold text-sm text-twitch-text flex items-center gap-1.5">
+              <Layers size={14} /> Now Playing Source
+            </h2>
+            <Link to="/collections" className="text-[10px] text-twitch-purple hover:underline">Configure →</Link>
+          </div>
+          {playCfg.mode === 'weighted' ? (
+            <p className="text-xs text-twitch-muted">
+              Weighted mix &mdash; <Link to="/collections" className="text-twitch-purple hover:underline">edit in Collections</Link>
+            </p>
+          ) : (
+            <select
+              className="input text-xs w-full"
+              value={playCfg.activeCollectionId || 'main'}
+              onChange={async e => {
+                const id = e.target.value
+                const next = { ...playCfg, mode: 'single', activeCollectionId: id }
+                setPlayCfg(next)
+                await window.api.playback.setConfig(next)
+              }}
+            >
+              <option value="main">Main Queue (all approved)</option>
+              {collections.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          )}
+        </div>
 
         {/* Now Playing */}
         <div className="px-4 py-4 border-b border-twitch-border">

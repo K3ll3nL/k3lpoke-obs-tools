@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react'
-import { Check, X, ChevronDown, Search, Volume2, Scissors, Activity } from 'lucide-react'
+import { Check, X, ChevronDown, Search, Volume2, Scissors, Activity, Tag } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import WaveformEditor, { getEnvelopeVol } from '../components/WaveformEditor'
 import TrimBar from '../components/TrimBar'
@@ -12,8 +12,34 @@ function duration(secs) {
 }
 
 
-function ClipRow({ clip, onStatusChange }) {
+function ClipRow({ clip, onStatusChange, collections, onCollectionsChanged }) {
   const [expanded, setExpanded] = useState(false)
+
+  // Collection tagging
+  const [showColMenu, setShowColMenu] = useState(false)
+  const colMenuRef = useRef(null)
+  const memberOf = useMemo(
+    () => new Set((collections || []).filter(c => c.clipIds?.includes(clip.id)).map(c => c.id)),
+    [collections, clip.id]
+  )
+
+  useEffect(() => {
+    if (!showColMenu) return
+    function handleOutside(e) {
+      if (colMenuRef.current && !colMenuRef.current.contains(e.target)) setShowColMenu(false)
+    }
+    document.addEventListener('mousedown', handleOutside)
+    return () => document.removeEventListener('mousedown', handleOutside)
+  }, [showColMenu])
+
+  async function toggleCollection(colId) {
+    if (memberOf.has(colId)) {
+      await window.api.collections.removeClip(colId, clip.id)
+    } else {
+      await window.api.collections.addClip(colId, clip.id)
+    }
+    onCollectionsChanged?.()
+  }
   const [videoUrl, setVideoUrl] = useState(null)
   const [loadingUrl, setLoadingUrl] = useState(false)
   const [urlError, setUrlError] = useState(null)
@@ -110,8 +136,8 @@ function ClipRow({ clip, onStatusChange }) {
           <ChevronDown size={16} className={`self-center shrink-0 mr-1 text-twitch-muted transition-transform duration-200 ${expanded ? 'rotate-180' : ''}`} />
         </button>
 
-        {/* Approve / Deny buttons */}
-        <div className="flex flex-col gap-1 justify-center px-3 border-l border-twitch-border shrink-0">
+        {/* Approve / Deny / Collections buttons */}
+        <div className="flex flex-col gap-1 justify-center px-3 border-l border-twitch-border shrink-0 relative">
           <button
             onClick={handleApprove}
             title="Approve"
@@ -134,6 +160,44 @@ function ClipRow({ clip, onStatusChange }) {
           >
             <X size={14} />
           </button>
+
+          {/* Collections tag button — only for approved clips */}
+          {clip.status === 'approved' && collections?.length > 0 && (
+            <div ref={colMenuRef} className="relative">
+              <button
+                onClick={e => { e.stopPropagation(); setShowColMenu(v => !v) }}
+                title="Add to collection"
+                className={`w-8 h-8 rounded flex items-center justify-center transition-colors relative ${
+                  memberOf.size > 0
+                    ? 'bg-twitch-purple/20 text-twitch-purple'
+                    : 'text-twitch-muted hover:bg-twitch-surface hover:text-twitch-text'
+                }`}
+              >
+                <Tag size={13} />
+                {memberOf.size > 0 && (
+                  <span className="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-twitch-purple text-white text-[8px] flex items-center justify-center font-bold">
+                    {memberOf.size}
+                  </span>
+                )}
+              </button>
+              {showColMenu && (
+                <div className="absolute right-full top-0 mr-2 w-48 bg-twitch-mid border border-twitch-border rounded-lg shadow-xl z-50 py-1 overflow-hidden">
+                  <p className="px-3 py-1.5 text-[10px] text-twitch-muted font-semibold uppercase tracking-wide border-b border-twitch-border mb-1">Collections</p>
+                  {collections.map(col => (
+                    <button
+                      key={col.id}
+                      onClick={() => toggleCollection(col.id)}
+                      className="w-full text-left px-3 py-1.5 text-sm flex items-center gap-2 hover:bg-twitch-surface transition-colors"
+                    >
+                      <span className="w-2 h-2 rounded-full shrink-0" style={{ background: col.color }} />
+                      <span className="flex-1 truncate text-twitch-text">{col.name}</span>
+                      {memberOf.has(col.id) && <Check size={11} className="text-twitch-purple shrink-0" />}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
@@ -219,8 +283,15 @@ export default function Review() {
   const [search, setSearch] = useState('')
   const [creatorFilter, setCreatorFilter] = useState('')
   const [hideReviewed, setHideReviewed] = useState(false)
+  const [collections, setCollections] = useState([])
+
+  async function loadCollections() {
+    const r = await window.api.collections.list()
+    if (r.ok) setCollections(r.data)
+  }
 
   useEffect(() => {
+    loadCollections()
     window.api.channels.list().then(r => {
       if (r.ok) {
         setChannels(r.data)
@@ -360,7 +431,13 @@ export default function Review() {
           )}
 
           {filteredClips.map(clip => (
-            <ClipRow key={`${clip.id}-${sortBy}-${search}-${creatorFilter}-${hideReviewed}-${selectedChannel}`} clip={clip} onStatusChange={handleStatusChange} />
+            <ClipRow
+              key={`${clip.id}-${sortBy}-${search}-${creatorFilter}-${hideReviewed}-${selectedChannel}`}
+              clip={clip}
+              onStatusChange={handleStatusChange}
+              collections={collections}
+              onCollectionsChanged={loadCollections}
+            />
           ))}
         </div>
       </div>
