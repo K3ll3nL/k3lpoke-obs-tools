@@ -7,7 +7,8 @@
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
-    "make": "npm run build && electron-packager . \"Twitch Clip Queue\" --platform=win32 --arch=x64 --out=dist --overwrite --electron-path=./node_modules/electron/dist/electron.exe --app-version=0.1.0 --ignore=\"src|node_modules|\\.git\""
+    "make": "npm run build && electron-packager . \"Twitch Clip Queue\" --platform=win32 --arch=x64 --out=dist --overwrite --electron-path=./node_modules/electron/dist/electron.exe --app-version=0.1.0 --ignore=\"src|node_modules|\\.git\"",
+    "package": "npm run build && electron-builder --win"
   },
   "build": {
     "appId": "com.k3lpoke.twitch-clips",
@@ -29,7 +30,7 @@
       "repo": "twitch-clips-k3lpoke"
     },
     "win": {
-      "target": "msi"
+      "target": "nsis"
     },
     "mac": {
       "target": "dmg"
