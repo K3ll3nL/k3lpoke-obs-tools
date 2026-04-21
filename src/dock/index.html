@@ -100,7 +100,7 @@
 
     let ws
     function connect() {
-      ws = new WebSocket('ws://localhost:3000/dock')
+      ws = new WebSocket('ws://localhost:1102/dock')
       ws.onopen = () => {}
       ws.onmessage = (e) => {
         try {

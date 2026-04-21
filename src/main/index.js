@@ -22,7 +22,7 @@ async function createWindow() {
     title: 'K3lPoke OBS Tools',
     backgroundColor: '#0e0e10',
     webPreferences: {
-      preload: path.join(__dirname, '../preload/index.js'),
+      preload: path.join(__dirname, '../preload/index.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
       webSecurity: false  // allows Twitch embed iframes from localhost/file origins
@@ -34,8 +34,7 @@ async function createWindow() {
   if (process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
-    // Serve from localhost so Twitch embed iframes work (parent=localhost)
-    mainWindow.loadURL('http://localhost:3000')
+    mainWindow.loadURL(`http://localhost:1102`)
   }
 
   // Open external links in the system browser
@@ -61,7 +60,7 @@ app.whenReady().then(async () => {
   try {
     initDb()
     initTwitch()
-    await startServer()
+    await startServer().catch((err) => console.error('Server failed to start:', err))
 
     const win = await createWindow()
     registerIpcHandlers(win)

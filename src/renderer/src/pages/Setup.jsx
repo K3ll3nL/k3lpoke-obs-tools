@@ -48,9 +48,9 @@ export default function Setup({ twitchUser, obsConnected }) {
       <div className="w-full max-w-md space-y-6">
         <div>
           <div className="w-12 h-12 rounded-xl bg-twitch-purple flex items-center justify-center mb-4">
-            <span className="text-white font-bold text-lg">TC</span>
+            <span className="text-white font-bold text-lg">K3</span>
           </div>
-          <h1 className="text-2xl font-bold text-twitch-text">Twitch Clip Queue</h1>
+          <h1 className="text-2xl font-bold text-twitch-text">K3LPoke OBS Tools</h1>
           <p className="text-twitch-muted text-sm mt-1">Connect your accounts to get started.</p>
         </div>
 

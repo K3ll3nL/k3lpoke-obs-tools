@@ -5,13 +5,13 @@ import cors from 'cors'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { app as electronApp } from 'electron'
-import { getClipVideoUrl } from './twitch.js'
+import { getClipVideoUrl, receiveAuthToken } from './twitch.js'
 import { getClipsByStatus, getClipById, getSetting, getCollections, getPlaybackConfig, getShinyLayoutForScene, getShinyDevices } from './db.js'
 import { showDeviceInScene } from './obs.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
-export const PORT = 3000
+export const PORT = 1102
 const app = express()
 const httpServer = createServer(app)
 const wss = new WebSocketServer({ server: httpServer })
@@ -70,16 +70,33 @@ app.get('/api/clip-url/:id', async (req, res) => {
   }
 })
 
-// Twitch OAuth implicit-flow callback page
+// Twitch OAuth implicit-flow callback page — extracts hash token and POSTs it to /auth/token
 app.get('/auth/callback', (req, res) => {
   res.send(`<!DOCTYPE html>
 <html>
 <head><title>Authenticating...</title></head>
 <body style="background:#0e0e10;color:#efeff1;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;flex-direction:column;gap:12px">
-  <h2 style="color:#9146FF">Connecting to Twitch...</h2>
+  <h2 id="msg" style="color:#9146FF">Connecting to Twitch...</h2>
   <p style="color:#adadb8">You can close this window.</p>
+  <script>
+    const params = new URLSearchParams(location.hash.slice(1));
+    const token = params.get('access_token');
+    if (token) {
+      fetch('/auth/token?access_token=' + encodeURIComponent(token))
+        .then(() => { document.getElementById('msg').textContent = 'Connected! You can close this window.' })
+        .catch(() => { document.getElementById('msg').textContent = 'Error — please try again.' })
+    } else {
+      document.getElementById('msg').textContent = 'No token received — please try again.'
+    }
+  </script>
 </body>
 </html>`)
+})
+
+app.get('/auth/token', (req, res) => {
+  const token = req.query.access_token
+  res.json({ ok: !!token })
+  if (token) receiveAuthToken(token)
 })
 
 // ── WebSocket broadcasting ──────────────────────────────────────────────────
@@ -211,7 +228,8 @@ export function broadcastCollectionsUpdated() {
 // ── Start server ────────────────────────────────────────────────────────────
 
 export function startServer() {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
+    httpServer.on('error', reject)
     httpServer.listen(PORT, '127.0.0.1', () => resolve(PORT))
   })
 }

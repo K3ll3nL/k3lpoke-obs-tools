@@ -1,11 +1,11 @@
 import axios from 'axios'
-import { BrowserWindow, shell } from 'electron'
+import { shell } from 'electron'
 import { getSetting, setSetting } from './db.js'
 
 const TWITCH_AUTH_URL = 'https://id.twitch.tv/oauth2/authorize'
 const TWITCH_API = 'https://api.twitch.tv/helix'
 const TWITCH_GQL = 'https://gql.twitch.tv/gql'
-const REDIRECT_URI = 'http://localhost:3000/auth/callback'
+const REDIRECT_URI = 'http://localhost:1102/auth/callback'
 const SCOPES = 'user:read:email'
 const DEFAULT_CLIENT_ID = '0ue4vlu07adeae3lxj3e7euyuhvmyx'
 // Twitch's internal GQL client ID — required for playback token endpoint
@@ -30,6 +30,18 @@ export function setClientId(id) {
   setSetting('twitchClientId', id)
 }
 
+let _pendingAuthResolve = null
+let _pendingAuthReject = null
+
+export function receiveAuthToken(token) {
+  if (!_pendingAuthResolve) return
+  const resolve = _pendingAuthResolve
+  const reject = _pendingAuthReject
+  _pendingAuthResolve = null
+  _pendingAuthReject = null
+  storeToken(token).then(resolve).catch(reject)
+}
+
 export async function startOAuthFlow() {
   if (!clientId) throw new Error('No Client ID configured')
 
@@ -41,35 +53,18 @@ export async function startOAuthFlow() {
     `&force_verify=false`
 
   return new Promise((resolve, reject) => {
-    const win = new BrowserWindow({
-      width: 520,
-      height: 680,
-      title: 'Connect Twitch Account',
-      webPreferences: { nodeIntegration: false, contextIsolation: true }
-    })
+    _pendingAuthResolve = () => resolve(currentUser)
+    _pendingAuthReject = reject
 
-    win.loadURL(url)
-    win.setMenuBarVisibility(false)
+    const timer = setTimeout(() => {
+      _pendingAuthResolve = null
+      _pendingAuthReject = null
+      reject(new Error('Auth timed out'))
+    }, 5 * 60 * 1000)
 
-    const handleNav = async (navUrl) => {
-      if (!navUrl.startsWith('http://localhost:3000/auth/callback')) return
-      try {
-        const hash = await win.webContents.executeJavaScript('location.hash')
-        win.close()
-        const params = new URLSearchParams(hash.slice(1))
-        const token = params.get('access_token')
-        if (!token) return reject(new Error('No access token returned'))
-        await storeToken(token)
-        resolve(currentUser)
-      } catch (err) {
-        win.close()
-        reject(err)
-      }
-    }
+    _pendingAuthReject = (err) => { clearTimeout(timer); reject(err) }
 
-    win.webContents.on('did-navigate', (_, url) => handleNav(url))
-    win.webContents.on('will-redirect', (_, url) => handleNav(url))
-    win.on('closed', () => reject(new Error('Auth window closed')))
+    shell.openExternal(url)
   })
 }
 

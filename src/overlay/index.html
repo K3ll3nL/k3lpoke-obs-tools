@@ -82,7 +82,7 @@
   </div>
 
   <script>
-    const API = 'http://localhost:3000'
+    const API = 'http://localhost:1102'
     const info    = document.getElementById('overlay-info')
     const titleEl = document.getElementById('clip-title')
     const metaEl  = document.getElementById('clip-meta')
@@ -513,7 +513,7 @@
 
     // ── WebSocket ─────────────────────────────────────────────────────────────
     function connectWS() {
-      const ws = new WebSocket('ws://localhost:3000')
+      const ws = new WebSocket('ws://localhost:1102')
       wsRef = ws
       ws.onopen  = () => tryBegin()
       ws.onmessage = e => {
