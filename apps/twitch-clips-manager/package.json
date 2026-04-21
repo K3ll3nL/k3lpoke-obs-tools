@@ -1,6 +1,6 @@
 {
   "name": "twitch-clips-k3lpoke",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Twitch clip queue manager with OBS Browser Source integration",
   "author": "K3lPoke",
   "main": "out/main/index.js",
@@ -20,13 +20,16 @@
       "out/**/*"
     ],
     "extraResources": [
-      {
-        "from": "src/overlay",
-        "to": "overlay"
-      }
+      { "from": "src/overlay", "to": "overlay" },
+      { "from": "src/dock",    "to": "dock"    }
     ],
+    "publish": {
+      "provider": "github",
+      "owner": "K3lpoke",
+      "repo": "twitch-clips-k3lpoke"
+    },
     "win": {
-      "target": "dir"
+      "target": "msi"
     },
     "mac": {
       "target": "dmg"
@@ -38,6 +41,7 @@
   "dependencies": {
     "axios": "^1.7.2",
     "cors": "^2.8.5",
+    "electron-updater": "^6.3.9",
     "express": "^4.19.2",
     "obs-websocket-js": "^5.0.3",
     "ws": "^8.17.0"

@@ -52,7 +52,8 @@ contextBridge.exposeInMainWorld('api', {
     getStatus: () => invoke('obs:getStatus'),
     getScenes: () => invoke('obs:getScenes'),
     addBrowserSource: (sceneName) => invoke('obs:addBrowserSource', { sceneName }),
-    onStatusChanged: (cb) => ipcRenderer.on('obs:status-changed', (_, d) => cb(d))
+    onStatusChanged:  (cb) => ipcRenderer.on('obs:status-changed',  (_, d) => cb(d)),
+    onSceneChanged:   (cb) => ipcRenderer.on('obs:scene-changed',   (_, d) => cb(d))
   },
 
   // Player
@@ -80,6 +81,34 @@ contextBridge.exposeInMainWorld('api', {
     sendConfig: (config) => invoke('overlay:sendConfig', { config })
   },
 
+  // Shiny Hunt
+  shiny: {
+    getDockUrl:        ()                     => invoke('shiny:getDockUrl'),
+    getUniversalScene: ()                     => invoke('shiny:getUniversalScene'),
+    setUniversalScene: (sceneName)            => invoke('shiny:setUniversalScene', { sceneName }),
+    showDevice:        (deviceId)             => invoke('shiny:showDevice', { deviceId }),
+    getSourceList:     ()                     => invoke('shiny:getSourceList'),
+    getSceneItemList:  (sceneName)            => invoke('shiny:getSceneItemList', { sceneName }),
+    devices: {
+      list:   ()               => invoke('shiny:devices:list'),
+      add:    (data)           => invoke('shiny:devices:add',    data),
+      update: (id, changes)    => invoke('shiny:devices:update', { id, changes }),
+      remove: (id)             => invoke('shiny:devices:remove', { id })
+    },
+    layouts: {
+      list:         ()                         => invoke('shiny:layouts:list'),
+      create:       (data)                     => invoke('shiny:layouts:create',       data),
+      update:       (id, changes)              => invoke('shiny:layouts:update',       { id, changes }),
+      setPosition:       (id, deviceId, x, y, w, h) => invoke('shiny:layouts:setPosition',       { id, deviceId, x, y, w, h }),
+      replacePositions:  (id, positions)            => invoke('shiny:layouts:replacePositions',  { id, positions }),
+      removeDevice: (id, deviceId)             => invoke('shiny:layouts:removeDevice', { id, deviceId }),
+      remove:       (id)                       => invoke('shiny:layouts:remove',       { id }),
+      setActive:    (id)                       => invoke('shiny:layouts:setActive',    { id }),
+      getActive:    ()                         => invoke('shiny:layouts:getActive'),
+      getForScene:  (sceneName)               => invoke('shiny:layouts:getForScene',  { sceneName })
+    }
+  },
+
   // Marketplace
   marketplace: {
     getSubscribed: () => invoke('marketplace:getSubscribed'),
@@ -103,5 +132,12 @@ contextBridge.exposeInMainWorld('api', {
   playback: {
     getConfig: ()       => invoke('playback:getConfig'),
     setConfig: (config) => invoke('playback:setConfig', config),
+  },
+
+  // App updates
+  app: {
+    onUpdateAvailable: (cb) => ipcRenderer.on('app:update-available', (_, d) => cb(d)),
+    onUpdateReady:     (cb) => ipcRenderer.on('app:update-ready', (_, d) => cb(d)),
+    installUpdate:     ()   => invoke('app:installUpdate')
   }
 })

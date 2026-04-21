@@ -6,7 +6,8 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import { app as electronApp } from 'electron'
 import { getClipVideoUrl } from './twitch.js'
-import { getClipsByStatus, getClipById, getSetting, getCollections, getPlaybackConfig } from './db.js'
+import { getClipsByStatus, getClipById, getSetting, getCollections, getPlaybackConfig, getShinyLayoutForScene, getShinyDevices } from './db.js'
+import { showDeviceInScene } from './obs.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -24,6 +25,15 @@ const overlayDir = electronApp.isPackaged
   : path.join(__dirname, '../../src/overlay')
 
 app.use('/overlay', express.static(overlayDir))
+
+const dockDir = electronApp.isPackaged
+  ? path.join(process.resourcesPath, 'dock')
+  : path.join(__dirname, '../../src/dock')
+app.use('/dock', express.static(dockDir))
+
+app.get('/api/shiny/state', (req, res) => {
+  res.json({ layout: getShinyLayoutForScene(shinyCurrentScene), currentScene: shinyCurrentScene, currentDeviceId: shinyCurrentDeviceId })
+})
 
 // Serve built renderer in production so Twitch embed parent=localhost works
 if (electronApp.isPackaged) {
@@ -75,12 +85,54 @@ app.get('/auth/callback', (req, res) => {
 // ── WebSocket broadcasting ──────────────────────────────────────────────────
 
 const overlayClients = new Set()
+const dockClients    = new Set()
 let mainWindowRef = null
 let storedOverlayConfig = null
+let shinyCurrentScene    = null
+let shinyCurrentDeviceId = null
 
 export function setMainWindow(win) { mainWindowRef = win }
+export function setShinyCurrentScene(sceneName) { shinyCurrentScene = sceneName }
 
-wss.on('connection', (ws) => {
+export function broadcastToDock(message) {
+  const payload = JSON.stringify(message)
+  for (const ws of dockClients) {
+    if (ws.readyState === 1) ws.send(payload)
+  }
+}
+
+export function notifyShinyLayoutChanged() {
+  broadcastToDock({ type: 'layout-changed', layout: getShinyLayoutForScene(shinyCurrentScene) })
+}
+
+wss.on('connection', (ws, req) => {
+  // Dock clients connect to /dock; everything else is the overlay
+  if (req.url === '/dock') {
+    dockClients.add(ws)
+    ws.on('close', () => dockClients.delete(ws))
+    ws.on('error', () => dockClients.delete(ws))
+    ws.on('message', (raw) => {
+      try {
+        const msg = JSON.parse(raw.toString())
+        if (msg.type === 'show-device' && msg.deviceId) {
+          const device = getShinyDevices().find(d => d.id === msg.deviceId)
+          const universalScene = getSetting('shinyUniversalScene')
+          if (device && universalScene) {
+            const allSources = getShinyDevices().map(d => d.obsSourceName).filter(Boolean)
+            showDeviceInScene({ universalScene, targetSourceName: device.obsSourceName, allDeviceSources: allSources })
+              .then(() => {
+                shinyCurrentDeviceId = msg.deviceId
+                broadcastToDock({ type: 'device-shown', deviceId: msg.deviceId })
+              })
+              .catch(e => console.error('show-device failed:', e))
+          }
+        }
+      } catch {}
+    })
+    ws.send(JSON.stringify({ type: 'hello', layout: getShinyLayoutForScene(shinyCurrentScene), currentScene: shinyCurrentScene, currentDeviceId: shinyCurrentDeviceId }))
+    return
+  }
+
   overlayClients.add(ws)
   ws.on('close', () => overlayClients.delete(ws))
   ws.on('error', () => overlayClients.delete(ws))
@@ -166,4 +218,8 @@ export function startServer() {
 
 export function getOverlayUrl() {
   return `http://localhost:${PORT}/overlay/index.html`
+}
+
+export function getDockUrl() {
+  return `http://localhost:${PORT}/dock/index.html`
 }

@@ -111,7 +111,7 @@ function ClipRow({ clip, onStatusChange, collections, onCollectionsChanged, sele
     showUndo('Clip approved', async () => {
       await window.api.clips.setStatus(clip.id, oldStatus)
       onStatusChange(clip.id, oldStatus)
-    })
+    }, [clip.id])
   }
 
   async function handleDeny() {
@@ -159,20 +159,22 @@ function ClipRow({ clip, onStatusChange, collections, onCollectionsChanged, sele
             <p className="text-sm font-medium text-twitch-text leading-snug truncate">{clip.title}</p>
             <div className="flex items-center gap-1.5">
               <p className="text-xs text-twitch-muted truncate">{clip.game_name || clip.game_id || 'Unknown game'}</p>
-              {memberOf.size > 0 && (
-                <div className="flex gap-1 items-center shrink-0">
-                  {(collections || []).filter(c => memberOf.has(c.id)).map(c => (
-                    <span key={c.id} className="w-1.5 h-1.5 rounded-full" style={{ background: c.color }} title={c.name} />
-                  ))}
-                </div>
-              )}
             </div>
             <p className="text-xs text-twitch-muted">
               {clip.broadcaster_name} &middot; Clipped by <span className="text-twitch-purple">{clip.creator_name}</span>
             </p>
-            <p className="text-[11px] text-twitch-muted">
-              {clip.view_count?.toLocaleString()} views &middot; {new Date(clip.created_at).toLocaleDateString()}
-            </p>
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <p className="text-[11px] text-twitch-muted shrink-0">
+                {clip.view_count?.toLocaleString()} views &middot; {new Date(clip.created_at).toLocaleDateString()}
+              </p>
+              {(collections || []).filter(c => memberOf.has(c.id)).map(c => (
+                <span key={c.id} className="flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium shrink-0" style={{ background: c.color + '33', color: c.color }}>
+                  <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: c.color }} />
+                  {c.name}
+                </span>
+              ))}
+            </div>
+
           </div>
           <ChevronDown size={16} className={`self-center shrink-0 mr-1 text-twitch-muted transition-transform duration-200 ${expanded ? 'rotate-180' : ''}`} />
         </button>
@@ -380,7 +382,7 @@ export default function Review() {
     showUndo(`${ids.length} clip${ids.length !== 1 ? 's' : ''} approved`, async () => {
       for (const id of ids) await window.api.clips.setStatus(id, oldStatuses[id])
       setAllClips(prev => prev.map(c => ids.includes(c.id) ? { ...c, status: oldStatuses[c.id] } : c))
-    })
+    }, ids)
   }
 
   async function denySelected() {

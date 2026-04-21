@@ -123,6 +123,18 @@ export async function fetchUserByLogin(login) {
   return data.data[0] ?? null
 }
 
+export async function checkClipsExist(clipIds) {
+  const existing = new Set()
+  for (let i = 0; i < clipIds.length; i += 100) {
+    const batch = clipIds.slice(i, i + 100)
+    const qs = batch.map(id => `id=${encodeURIComponent(id)}`).join('&')
+    const res = await axios.get(`${TWITCH_API}/clips?${qs}&first=100`, { headers: apiHeaders() })
+    res.data.data.forEach(c => existing.add(c.id))
+    if (i + 100 < clipIds.length) await new Promise(r => setTimeout(r, 250))
+  }
+  return existing
+}
+
 export async function fetchClips({ broadcasterId, cursor, limit = 20, startedAt } = {}) {
   const params = { broadcaster_id: broadcasterId, first: limit }
   if (cursor) params.after = cursor

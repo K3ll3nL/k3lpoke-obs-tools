@@ -1,21 +1,27 @@
 import { ipcMain } from 'electron'
+import { autoUpdater } from 'electron-updater'
 import {
   initTwitch, getTwitchState, setClientId, startOAuthFlow, logout,
-  fetchUserByLogin, fetchClips, getClipVideoUrl
+  fetchUserByLogin, fetchClips, getClipVideoUrl, checkClipsExist
 } from './twitch.js'
-import { connectOBS, disconnectOBS, isConnected, getSceneList, addBrowserSource } from './obs.js'
+import { connectOBS, disconnectOBS, isConnected, getSceneList, addBrowserSource, switchScene, getSourceList, getSceneItemList, showDeviceInScene } from './obs.js'
 import {
   getClipsByStatus, getAllClips, getNewClips, setClipStatus, bulkSetStatus, removeClip, reorderQueue,
   upsertClip, clipExists, getChannels, upsertChannel, removeChannel,
   updateChannelCursor, getSetting, setSetting, getAllSettings, setClipVolume, setClipTrim, setClipEnvelope,
   getCollections, createCollection, updateCollection, deleteCollection,
   addClipToCollection, removeClipFromCollection, getCollectionClips, getCollectionMemberships,
-  getPlaybackConfig, setPlaybackConfig
+  getPlaybackConfig, setPlaybackConfig,
+  getShinyDevices, addShinyDevice, updateShinyDevice, removeShinyDevice,
+  getShinyLayouts, createShinyLayout, updateShinyLayout,
+  setShinyLayoutPosition, replaceShinyLayoutPositions, removeDeviceFromShinyLayout, removeShinyLayout,
+  setActiveShinyLayout, getActiveShinyLayout, getShinyLayoutForScene
 } from './db.js'
 import {
   playClip, stopPlayer, getPlayerState, getNextClipState, broadcastSkipNext,
   getOverlayUrl, sendOverlayConfig, notifyQueueUpdated, broadcastVolumeChange,
-  setMainWindow, broadcastPlaybackConfigUpdated, broadcastCollectionsUpdated
+  setMainWindow, broadcastPlaybackConfigUpdated, broadcastCollectionsUpdated,
+  notifyShinyLayoutChanged, getDockUrl
 } from './server.js'
 
 export async function runAutoFetch(win) {
@@ -46,6 +52,15 @@ export async function runAutoFetch(win) {
       } while (cursor)
     } catch {
       // skip failed channel, cursor already saved
+    }
+    try {
+      const allIds = getAllClips(ch.name).map(c => c.id)
+      if (allIds.length > 0) {
+        const existing = await checkClipsExist(allIds)
+        for (const id of allIds) { if (!existing.has(id)) removeClip(id) }
+      }
+    } catch {
+      // don't block fetch if validation fails
     }
   }
   if (totalAdded > 0) {
@@ -126,6 +141,15 @@ export function registerIpcHandlers(mainWindow) {
       } catch (e) {
         // Cursor is already saved — next fetch will resume from the last successful page
         results.push({ channel: ch.name, added, error: e.message })
+      }
+      try {
+        const allIds = getAllClips(ch.name).map(c => c.id)
+        if (allIds.length > 0) {
+          const existing = await checkClipsExist(allIds)
+          for (const id of allIds) { if (!existing.has(id)) removeClip(id) }
+        }
+      } catch {
+        // don't block fetch if validation fails
       }
     }
     notifyQueueUpdated()
@@ -302,5 +326,43 @@ export function registerIpcHandlers(mainWindow) {
   handle('marketplace:unsubscribe', ({ appId }) => {
     const current = getSetting('subscribedApps') ?? []
     setSetting('subscribedApps', current.filter(id => id !== appId))
+  })
+
+  // ── Shiny Hunt ────────────────────────────────────────────────────────────
+
+  handle('shiny:getDockUrl',        ()                => getDockUrl())
+  handle('shiny:getUniversalScene', ()                => getSetting('shinyUniversalScene'))
+  handle('shiny:setUniversalScene', ({ sceneName })   => { setSetting('shinyUniversalScene', sceneName) })
+  handle('shiny:getSourceList',     async ()          => getSourceList())
+  handle('shiny:getSceneItemList',  async ({ sceneName }) => getSceneItemList(sceneName))
+
+  handle('shiny:showDevice', async ({ deviceId }) => {
+    const device       = getShinyDevices().find(d => d.id === deviceId)
+    const universalScene = getSetting('shinyUniversalScene')
+    if (!device || !universalScene) throw new Error('Device or universal scene not configured')
+    const allDeviceSources = getShinyDevices().map(d => d.obsSourceName).filter(Boolean)
+    await showDeviceInScene({ universalScene, targetSourceName: device.obsSourceName, allDeviceSources })
+  })
+
+  handle('shiny:devices:list',   ()                => getShinyDevices())
+  handle('shiny:devices:add',    (data)            => addShinyDevice(data))
+  handle('shiny:devices:update', ({ id, changes }) => updateShinyDevice(id, changes))
+  handle('shiny:devices:remove', ({ id })          => { removeShinyDevice(id); notifyShinyLayoutChanged() })
+
+  handle('shiny:layouts:list',             ()                          => getShinyLayouts())
+  handle('shiny:layouts:create',           (data)                      => createShinyLayout(data))
+  handle('shiny:layouts:update',           ({ id, changes })           => { const r = updateShinyLayout(id, changes); notifyShinyLayoutChanged(); return r })
+  handle('shiny:layouts:setPosition',      ({ id, deviceId, x, y, w, h }) => { const r = setShinyLayoutPosition(id, deviceId, x, y, w, h); notifyShinyLayoutChanged(); return r })
+  handle('shiny:layouts:replacePositions', ({ id, positions })             => { const r = replaceShinyLayoutPositions(id, positions); notifyShinyLayoutChanged(); return r })
+  handle('shiny:layouts:removeDevice',     ({ id, deviceId })          => { const r = removeDeviceFromShinyLayout(id, deviceId); notifyShinyLayoutChanged(); return r })
+  handle('shiny:layouts:remove',           ({ id })                    => { removeShinyLayout(id); notifyShinyLayoutChanged() })
+  handle('shiny:layouts:setActive',        ({ id })                    => { setActiveShinyLayout(id); notifyShinyLayoutChanged() })
+  handle('shiny:layouts:getActive',        ()                          => getActiveShinyLayout())
+  handle('shiny:layouts:getForScene',      ({ sceneName })             => getShinyLayoutForScene(sceneName))
+
+  // ── Updates ────────────────────────────────────────────────────────────────
+
+  handle('app:installUpdate', () => {
+    autoUpdater.quitAndInstall()
   })
 }

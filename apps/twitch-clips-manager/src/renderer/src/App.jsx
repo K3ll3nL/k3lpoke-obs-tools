@@ -3,7 +3,11 @@ import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import Nav from './components/Nav'
 import RightPanel from './components/RightPanel'
 import UndoToast from './components/UndoToast'
+import UpdatePrompt from './components/UpdatePrompt'
 import Setup from './pages/Setup'
+import ShinySetup from './pages/ShinySetup'
+import ShinyDevices from './pages/ShinyDevices'
+import ShinyLayouts from './pages/ShinyLayouts'
 import Updates from './pages/Updates'
 import Review from './pages/Review'
 import Collections from './pages/Collections'
@@ -46,7 +50,7 @@ export default function App() {
 
   const isSetup = !!twitchUser
   const { pathname } = useLocation()
-  const hidePanel = ['/settings', '/setup', '/marketplace'].includes(pathname)
+  const hidePanel = ['/settings', '/setup', '/marketplace'].includes(pathname) || pathname.startsWith('/shiny')
 
   return (
     <div className="flex h-screen bg-twitch-dark overflow-hidden">
@@ -82,6 +86,9 @@ export default function App() {
               ? <Marketplace subscribedIds={subscribedIds} onSubscriptionChange={setSubscribedIds} />
               : <Navigate to="/setup" />
           } />
+          <Route path="/shiny/setup"   element={<ShinySetup obsConnected={obsConnected} />} />
+          <Route path="/shiny/devices" element={isSetup ? <ShinyDevices /> : <Navigate to="/setup" />} />
+          <Route path="/shiny/layouts" element={isSetup ? <ShinyLayouts /> : <Navigate to="/setup" />} />
           <Route path="*" element={
             <Navigate to={isSetup ? '/updates' : '/setup'} />
           } />
@@ -89,6 +96,7 @@ export default function App() {
       </main>
       {isSetup && !hidePanel && <RightPanel />}
       <UndoToast />
+      <UpdatePrompt />
     </div>
   )
 }

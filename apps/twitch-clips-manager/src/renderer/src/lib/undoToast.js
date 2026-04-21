@@ -1,7 +1,7 @@
 let listeners = []
 
-export function showUndo(message, undoFn) {
-  listeners.forEach(fn => fn({ message, undoFn, id: Date.now(), duration: 10000 }))
+export function showUndo(message, undoFn, clipIds = null) {
+  listeners.forEach(fn => fn({ message, undoFn, id: Date.now(), duration: 10000, clipIds }))
 }
 
 export function showNotice(message) {

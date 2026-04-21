@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Quick Shiny Screen</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { width: 100%; height: 100%; background: #0e0e10; overflow: hidden; }
+    #canvas-wrap { position: relative; width: 100%; height: 100%; }
+    .tile {
+      position: absolute;
+      background: #1f1f23;
+      border: 2px solid #2d2d35;
+      border-radius: 4px;
+      color: #efeff1;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 6px 8px;
+      overflow: hidden;
+      user-select: none;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    .tile:hover  { background: #26262c; border-color: #4a4a5a; }
+    .tile.active { background: #1f1030; border-color: #9147ff; box-shadow: 0 0 0 1px #9147ff; }
+    #empty-msg {
+      position: absolute; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      color: #adadb8; font-size: 13px; text-align: center;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      padding: 20px;
+    }
+  </style>
+</head>
+<body>
+  <div id="canvas-wrap"></div>
+  <script>
+    const PAD = 6
+    let state = { layout: null, currentScene: null, currentDeviceId: null }
+
+    function render() {
+      const wrap = document.getElementById('canvas-wrap')
+      const positions = state.layout?.positions ?? []
+      const tiles = positions.filter(p => p.device)
+
+      if (!state.layout || tiles.length === 0) {
+        wrap.innerHTML = '<div id="empty-msg">No layout configured.<br>Set one up in Quick Shiny Screen.</div>'
+        return
+      }
+
+      // Compute bounding box of tile system in layout % coords
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
+      for (const p of tiles) {
+        const w = p.w ?? 45, h = p.h ?? 45
+        if (p.x - w/2 < minX) minX = p.x - w/2
+        if (p.x + w/2 > maxX) maxX = p.x + w/2
+        if (p.y - h/2 < minY) minY = p.y - h/2
+        if (p.y + h/2 > maxY) maxY = p.y + h/2
+      }
+      const bw = maxX - minX || 1
+      const bh = maxY - minY || 1
+
+      // Available dock space after padding
+      const dw = wrap.clientWidth  - PAD * 2
+      const dh = wrap.clientHeight - PAD * 2
+
+      wrap.innerHTML = ''
+      for (const pos of tiles) {
+        const w = pos.w ?? 45, h = pos.h ?? 45
+        const el = document.createElement('div')
+        el.className = 'tile' + (pos.deviceId === state.currentDeviceId ? ' active' : '')
+        // Map tile center from layout bounding-box space → px in dock
+        el.style.left   = (PAD + (pos.x - minX - w/2) / bw * dw) + 'px'
+        el.style.top    = (PAD + (pos.y - minY - h/2) / bh * dh) + 'px'
+        el.style.width  = (w / bw * dw) + 'px'
+        el.style.height = (h / bh * dh) + 'px'
+        el.dataset.deviceId = pos.deviceId
+        el.textContent = pos.device.name
+        el.addEventListener('click', () => {
+          if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'show-device', deviceId: pos.deviceId }))
+        })
+        wrap.appendChild(el)
+      }
+    }
+
+    function updateActive() {
+      document.querySelectorAll('.tile').forEach(el => {
+        el.classList.toggle('active', el.dataset.deviceId === state.currentDeviceId)
+      })
+    }
+
+    // Re-render when dock is resized
+    new ResizeObserver(render).observe(document.getElementById('canvas-wrap'))
+
+    let ws
+    function connect() {
+      ws = new WebSocket('ws://localhost:3000/dock')
+      ws.onopen = () => {}
+      ws.onmessage = (e) => {
+        try {
+          const msg = JSON.parse(e.data)
+          if (msg.type === 'hello') {
+            state.layout          = msg.layout          ?? state.layout
+            state.currentScene    = msg.currentScene    ?? state.currentScene
+            state.currentDeviceId = msg.currentDeviceId ?? state.currentDeviceId
+            render()
+          }
+          if (msg.type === 'layout-changed') { state.layout = msg.layout; render() }
+          if (msg.type === 'scene-changed') {
+            state.currentScene = msg.sceneName
+            if (msg.layout !== undefined) { state.layout = msg.layout; render() }
+          }
+          if (msg.type === 'device-shown') { state.currentDeviceId = msg.deviceId; updateActive() }
+        } catch {}
+      }
+      ws.onclose = () => setTimeout(connect, 3000)
+      ws.onerror = () => {}
+    }
+
+    fetch('/api/shiny/state').then(r => r.json()).then(data => {
+      state.layout = data.layout
+      state.currentScene = data.currentScene
+      state.currentDeviceId = data.currentDeviceId
+      render()
+    }).catch(() => {})
+
+    connect()
+  </script>
+</body>
+</html>

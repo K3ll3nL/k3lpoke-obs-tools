@@ -1,4 +1,4 @@
-import { Bell, ClipboardCheck, Settings, ListVideo, Layers } from 'lucide-react'
+import { Bell, ClipboardCheck, Settings, ListVideo, Layers, Monitor, LayoutGrid } from 'lucide-react'
 
 /**
  * Central registry of all K3LPoke apps.
@@ -22,6 +22,22 @@ export const APP_REGISTRY = [
       { to: '/review',      icon: ClipboardCheck, label: 'Review'      },
       { to: '/collections', icon: Layers,         label: 'Collections' },
       { to: '/clip-settings', icon: Settings,     label: 'Settings'    },
+    ],
+  },
+  {
+    id: 'quick-shiny-screen',
+    name: 'Quick Shiny Screen',
+    tagline: 'Scene switcher for shiny hunters',
+    description:
+      'Manage multiple Nintendo Switches for shiny Pokemon hunting. Assign OBS scenes to each device, build a physical grid layout, and get a one-click OBS dock to switch scenes instantly.',
+    color: '#FFD700',
+    gradient: 'from-yellow-400 to-amber-600',
+    defaultRoute: '/shiny/devices',
+    core: false,
+    version: '0.1.0',
+    navItems: [
+      { to: '/shiny/devices', icon: Monitor,    label: 'Devices' },
+      { to: '/shiny/layouts', icon: LayoutGrid, label: 'Layouts' },
     ],
   },
   {

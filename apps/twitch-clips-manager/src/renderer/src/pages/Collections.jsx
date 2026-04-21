@@ -81,7 +81,10 @@ function ClipCard({ clip, canRemove, onRemove, onDragStart, onDragEnd, collectio
           <div className="flex items-center gap-1.5 mt-0.5">
             <p className="text-xs text-twitch-muted truncate">{clip.broadcaster_name}</p>
             {(collections || []).filter(c => c.id !== selectedId && c.clipIds?.includes(clip.id)).map(c => (
-              <span key={c.id} className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: c.color }} title={c.name} />
+              <span key={c.id} className="flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium shrink-0" style={{ background: c.color + '33', color: c.color }}>
+                <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: c.color }} />
+                {c.name}
+              </span>
             ))}
           </div>
         </button>
@@ -310,7 +313,7 @@ export default function Collections() {
                 />
               ) : (
                 <button
-                  onClick={() => setSelectedId(col.id)}
+                  onClick={() => { setSelectedId(col.id); setClips([]) }}
                   onDoubleClick={() => col.id !== 'main' && startRename(col)}
                   onDragOver={col.id !== 'main' ? e => { e.preventDefault(); setDragOverColId(col.id) } : undefined}
                   onDragLeave={col.id !== 'main' ? () => setDragOverColId(null) : undefined}

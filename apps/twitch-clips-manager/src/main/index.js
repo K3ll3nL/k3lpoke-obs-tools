@@ -1,11 +1,12 @@
 import { app, BrowserWindow, shell, session } from 'electron'
 import path from 'path'
 import { fileURLToPath } from 'url'
-import { initDb, getSetting } from './db.js'
+import { autoUpdater } from 'electron-updater'
+import { initDb, getSetting, getShinyLayoutForScene } from './db.js'
 import { initTwitch } from './twitch.js'
-import { startServer, broadcastToOverlay } from './server.js'
+import { startServer, broadcastToOverlay, broadcastToDock, setShinyCurrentScene } from './server.js'
 import { registerIpcHandlers, runAutoFetch } from './ipc.js'
-import { onStatusChange, connectOBS } from './obs.js'
+import { onStatusChange, onSceneChanged, onOBSConnected, connectOBS } from './obs.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const isDev = !app.isPackaged
@@ -65,8 +66,31 @@ app.whenReady().then(async () => {
     const win = await createWindow()
     registerIpcHandlers(win)
 
+    // Setup auto-updater
+    autoUpdater.checkForUpdatesAndNotify()
+    autoUpdater.on('update-available', () => {
+      win.webContents.send('app:update-available')
+    })
+    autoUpdater.on('update-downloaded', () => {
+      win.webContents.send('app:update-ready')
+    })
+
     onStatusChange((status) => {
       win.webContents.send('obs:status-changed', status)
+    })
+
+    onOBSConnected((sceneName) => {
+      if (sceneName) {
+        setShinyCurrentScene(sceneName)
+        broadcastToDock({ type: 'scene-changed', sceneName, layout: getShinyLayoutForScene(sceneName) })
+        win.webContents.send('obs:scene-changed', sceneName)
+      }
+    })
+
+    onSceneChanged((sceneName) => {
+      setShinyCurrentScene(sceneName)
+      broadcastToDock({ type: 'scene-changed', sceneName, layout: getShinyLayoutForScene(sceneName) })
+      win.webContents.send('obs:scene-changed', sceneName)
     })
 
     // Hourly incremental clip fetch for all channels
