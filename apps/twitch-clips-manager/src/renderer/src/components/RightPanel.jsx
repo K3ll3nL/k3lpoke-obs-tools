@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef, useMemo } from 'react'
-import { Copy, Monitor, Check, Volume2, Lock, X, Scissors, Activity, Layers, Shuffle, SkipForward } from 'lucide-react'
+import { Copy, Monitor, Check, Volume2, Lock, X, Scissors, Activity, Layers, Shuffle, SkipForward, Tag, ChevronDown } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import TrimBar from './TrimBar'
 import WaveformEditor from './WaveformEditor'
@@ -27,6 +27,10 @@ export default function RightPanel() {
   const [clipEnvelope, setClipEnvelope] = useState([])
   const pendingClip = useRef(null)
   const lockedRef = useRef(false)
+
+  // Add to collection dropdown (Now Playing)
+  const [showNpColMenu, setShowNpColMenu] = useState(false)
+  const npColMenuRef = useRef(null)
 
   // Up Next
   const [nextClip, setNextClip] = useState(null)
@@ -112,6 +116,21 @@ export default function RightPanel() {
       trim_start: start > 0 ? start : null,
       trim_end: end < clipDur ? end : null
     } : prev)
+  }
+
+  useEffect(() => {
+    if (!showNpColMenu) return
+    function h(e) { if (!npColMenuRef.current?.contains(e.target)) setShowNpColMenu(false) }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [showNpColMenu])
+
+  async function handleAddNpToCollection(colId) {
+    if (!nowPlaying) return
+    await window.api.collections.addClip(colId, nowPlaying.id)
+    setShowNpColMenu(false)
+    const r = await window.api.collections.list()
+    if (r.ok) setCollections(r.data)
   }
 
   async function handleRemoveNowPlaying() {
@@ -255,12 +274,42 @@ export default function RightPanel() {
               {locked
                 ? <span className="text-[10px] text-twitch-muted flex items-center gap-1"><Lock size={10} /> Auto-update paused</span>
                 : <span />}
-              <button
-                onClick={handleRemoveNowPlaying}
-                className="text-xs text-red-400 hover:text-red-300 flex items-center gap-1 transition-colors"
-              >
-                <X size={11} /> Deny
-              </button>
+              <div className="flex items-center gap-2">
+                {collections.length > 0 && (
+                  <div className="relative" ref={npColMenuRef}>
+                    <button
+                      onClick={() => setShowNpColMenu(v => !v)}
+                      title="Add to collection"
+                      className="text-xs text-twitch-muted hover:text-twitch-purple flex items-center gap-1 transition-colors"
+                    >
+                      <Tag size={11} /> <ChevronDown size={9} />
+                    </button>
+                    {showNpColMenu && (
+                      <div className="absolute right-0 bottom-full mb-1 w-44 bg-twitch-mid border border-twitch-border rounded-lg shadow-xl z-50 py-1">
+                        <p className="px-3 py-1 text-[10px] text-twitch-muted font-semibold uppercase tracking-wide border-b border-twitch-border mb-1">
+                          Add to Collection
+                        </p>
+                        {collections.map(col => (
+                          <button
+                            key={col.id}
+                            onClick={() => handleAddNpToCollection(col.id)}
+                            className="w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-twitch-surface transition-colors"
+                          >
+                            <span className="w-2 h-2 rounded-full shrink-0" style={{ background: col.color }} />
+                            <span className="flex-1 truncate text-twitch-text">{col.name}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+                <button
+                  onClick={handleRemoveNowPlaying}
+                  className="text-xs text-red-400 hover:text-red-300 flex items-center gap-1 transition-colors"
+                >
+                  <X size={11} /> Deny
+                </button>
+              </div>
             </div>
           </div>
         ) : (

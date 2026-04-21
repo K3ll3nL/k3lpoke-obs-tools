@@ -36,7 +36,9 @@ export async function runAutoFetch(win) {
           startedAt: since ?? undefined
         })
         for (const clip of result.clips) {
-          if (!clipExists(clip.id)) { upsertClip(clip); totalAdded++ }
+          const isNew = !clipExists(clip.id)
+          upsertClip(clip)
+          if (isNew) totalAdded++
         }
         cursor = result.cursor
         updateChannelCursor(ch.name, cursor)
@@ -111,7 +113,9 @@ export function registerIpcHandlers(mainWindow) {
         do {
           const result = await fetchClips({ broadcasterId: ch.broadcaster_id, cursor, limit: 100 })
           for (const clip of result.clips) {
-            if (!clipExists(clip.id)) { upsertClip(clip); added++ }
+            const isNew = !clipExists(clip.id)
+            upsertClip(clip)
+            if (isNew) added++
           }
           cursor = result.cursor
           // Persist cursor after every page — if interrupted, next run resumes here
@@ -141,9 +145,9 @@ export function registerIpcHandlers(mainWindow) {
 
     const result = await fetchClips({ broadcasterId, cursor, limit })
 
-    // Persist new clips as pending (skip already-known ones)
+    // Persist new clips; update game_name/view_count for existing ones
     for (const clip of result.clips) {
-      if (!clipExists(clip.id)) upsertClip(clip)
+      upsertClip(clip)
     }
 
     if (result.cursor) updateChannelCursor(channelName, result.cursor)
@@ -164,6 +168,8 @@ export function registerIpcHandlers(mainWindow) {
   handle('clips:setVolume', ({ id, volume }) => { setClipVolume(id, volume); broadcastVolumeChange(id, volume) })
   handle('clips:setTrim', ({ id, trimStart, trimEnd }) => { setClipTrim(id, trimStart, trimEnd); notifyQueueUpdated() })
   handle('clips:setEnvelope', ({ id, envelope }) => { setClipEnvelope(id, envelope); notifyQueueUpdated() })
+  handle('clips:setStatus', ({ id, status }) => { setClipStatus(id, status); notifyQueueUpdated() })
+  handle('clips:bulkSetStatus', ({ ids, status }) => { bulkSetStatus(ids, status); notifyQueueUpdated() })
   handle('clips:reorder', ({ ids }) => { reorderQueue(ids); notifyQueueUpdated() })
 
   // ── Channels ──────────────────────────────────────────────────────────────

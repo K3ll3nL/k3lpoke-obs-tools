@@ -3,6 +3,7 @@ import { Check, X, ChevronDown, Search, Volume2, Scissors, Activity, Tag } from 
 import { Link } from 'react-router-dom'
 import WaveformEditor, { getEnvelopeVol } from '../components/WaveformEditor'
 import TrimBar from '../components/TrimBar'
+import { showUndo } from '../lib/undoToast'
 
 function duration(secs) {
   const m = Math.floor(secs / 60)
@@ -104,13 +105,23 @@ function ClipRow({ clip, onStatusChange, collections, onCollectionsChanged, sele
   }
 
   async function handleApprove() {
+    const oldStatus = clip.status
     await window.api.clips.approve(clip.id)
     onStatusChange(clip.id, 'approved')
+    showUndo('Clip approved', async () => {
+      await window.api.clips.setStatus(clip.id, oldStatus)
+      onStatusChange(clip.id, oldStatus)
+    })
   }
 
   async function handleDeny() {
+    const oldStatus = clip.status
     await window.api.clips.deny(clip.id)
     onStatusChange(clip.id, 'denied')
+    showUndo('Clip denied', async () => {
+      await window.api.clips.setStatus(clip.id, oldStatus)
+      onStatusChange(clip.id, oldStatus)
+    })
   }
 
   const showTagBtn = clip.status === 'approved' && collections?.length > 0
@@ -146,6 +157,16 @@ function ClipRow({ clip, onStatusChange, collections, onCollectionsChanged, sele
           </div>
           <div className="flex-1 min-w-0 flex flex-col justify-center gap-0.5">
             <p className="text-sm font-medium text-twitch-text leading-snug truncate">{clip.title}</p>
+            <div className="flex items-center gap-1.5">
+              <p className="text-xs text-twitch-muted truncate">{clip.game_name || clip.game_id || 'Unknown game'}</p>
+              {memberOf.size > 0 && (
+                <div className="flex gap-1 items-center shrink-0">
+                  {(collections || []).filter(c => memberOf.has(c.id)).map(c => (
+                    <span key={c.id} className="w-1.5 h-1.5 rounded-full" style={{ background: c.color }} title={c.name} />
+                  ))}
+                </div>
+              )}
+            </div>
             <p className="text-xs text-twitch-muted">
               {clip.broadcaster_name} &middot; Clipped by <span className="text-twitch-purple">{clip.creator_name}</span>
             </p>
@@ -278,6 +299,7 @@ export default function Review() {
   const [sortBy, setSortBy] = useState('views')
   const [search, setSearch] = useState('')
   const [creatorFilter, setCreatorFilter] = useState('')
+  const [gameFilter, setGameFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
   const [collections, setCollections] = useState([])
 
@@ -302,7 +324,11 @@ export default function Review() {
   useEffect(() => {
     loadCollections()
     window.api.channels.list().then(r => {
-      if (r.ok) { setChannels(r.data); if (r.data.length > 0) setSelectedChannel(r.data[0].name) }
+      if (r.ok) { 
+        const allChannels = [{ name: 'all', display_name: 'All Channels' }, ...r.data]
+        setChannels(allChannels); 
+        if (r.data.length > 0) setSelectedChannel(r.data[0].name) 
+        }
     })
   }, [])
 
@@ -310,7 +336,12 @@ export default function Review() {
 
   async function loadClips() {
     setLoading(true)
-    const r = await window.api.clips.getAll(selectedChannel)
+    let r 
+    if(selectedChannel==='all'){
+      r = await window.api.clips.getAll()
+    }else{
+      r = await window.api.clips.getAll(selectedChannel)
+    }
     if (r.ok) setAllClips(r.data)
     setLoading(false)
   }
@@ -320,7 +351,7 @@ export default function Review() {
   }
 
   function switchChannel(name) {
-    setSelectedChannel(name); setSearch(''); setCreatorFilter('')
+    setSelectedChannel(name); setSearch(''); setCreatorFilter(''); setGameFilter('')
     setSelectedIds(new Set()); lastSelIdxRef.current = null
   }
 
@@ -342,20 +373,31 @@ export default function Review() {
 
   async function approveSelected() {
     const ids = [...selectedIds]
+    const oldStatuses = Object.fromEntries(ids.map(id => [id, allClips.find(c => c.id === id)?.status ?? 'pending']))
     await window.api.clips.bulkApprove(ids)
     setAllClips(prev => prev.map(c => ids.includes(c.id) ? { ...c, status: 'approved' } : c))
     setSelectedIds(new Set())
+    showUndo(`${ids.length} clip${ids.length !== 1 ? 's' : ''} approved`, async () => {
+      for (const id of ids) await window.api.clips.setStatus(id, oldStatuses[id])
+      setAllClips(prev => prev.map(c => ids.includes(c.id) ? { ...c, status: oldStatuses[c.id] } : c))
+    })
   }
 
   async function denySelected() {
     const ids = [...selectedIds]
+    const oldStatuses = Object.fromEntries(ids.map(id => [id, allClips.find(c => c.id === id)?.status ?? 'pending']))
     await window.api.clips.bulkDeny(ids)
     setAllClips(prev => prev.map(c => ids.includes(c.id) ? { ...c, status: 'denied' } : c))
     setSelectedIds(new Set())
+    showUndo(`${ids.length} clip${ids.length !== 1 ? 's' : ''} denied`, async () => {
+      for (const id of ids) await window.api.clips.setStatus(id, oldStatuses[id])
+      setAllClips(prev => prev.map(c => ids.includes(c.id) ? { ...c, status: oldStatuses[c.id] } : c))
+    })
   }
 
   async function addSelectedToCollection(colId) {
     const ids = [...selectedIds]
+    const colName = collections.find(c => c.id === colId)?.name ?? 'collection'
     const unapproved = ids.filter(id => allClips.find(c => c.id === id)?.status !== 'approved')
     if (unapproved.length) {
       await window.api.clips.bulkApprove(unapproved)
@@ -365,10 +407,19 @@ export default function Review() {
     loadCollections()
     setShowAddToCol(false)
     setSelectedIds(new Set())
+    showUndo(`Added ${ids.length} to ${colName}`, async () => {
+      for (const id of ids) await window.api.collections.removeClip(colId, id)
+      loadCollections()
+    })
   }
 
   const creators = useMemo(() => {
     const set = new Set(allClips.map(c => c.creator_name).filter(Boolean))
+    return [...set].sort()
+  }, [allClips])
+
+  const games = useMemo(() => {
+    const set = new Set(allClips.map(c => c.game_name).filter(Boolean))
     return [...set].sort()
   }, [allClips])
 
@@ -379,6 +430,7 @@ export default function Review() {
     if (statusFilter === 'denied')   clips = clips.filter(c => c.status === 'denied')
     if (search) clips = clips.filter(c => c.title?.toLowerCase().includes(search.toLowerCase()))
     if (creatorFilter) clips = clips.filter(c => c.creator_name === creatorFilter)
+    if (gameFilter) clips = clips.filter(c => c.game_name === gameFilter)
     switch (sortBy) {
       case 'views':  clips.sort((a, b) => (b.view_count || 0) - (a.view_count || 0)); break
       case 'newest': clips.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)); break
@@ -386,7 +438,7 @@ export default function Review() {
       case 'az':     clips.sort((a, b) => (a.title ?? '').localeCompare(b.title ?? '')); break
     }
     return clips
-  }, [allClips, search, creatorFilter, sortBy, statusFilter])
+  }, [allClips, search, creatorFilter, gameFilter, sortBy, statusFilter])
 
   const selectionActive = selectedIds.size > 0
 
@@ -448,6 +500,12 @@ export default function Review() {
             <option value="">All creators</option>
             {creators.map(c => <option key={c} value={c}>{c}</option>)}
           </select>
+          {games.length > 0 && (
+            <select className="input text-sm w-40" value={gameFilter} onChange={e => setGameFilter(e.target.value)}>
+              <option value="">All games</option>
+              {games.map(g => <option key={g} value={g}>{g}</option>)}
+            </select>
+          )}
           <select className="input text-sm w-36" value={sortBy} onChange={e => setSortBy(e.target.value)}>
             <option value="views">Most Popular</option>
             <option value="newest">Newest</option>
@@ -511,7 +569,7 @@ export default function Review() {
           )}
           {filteredClips.map((clip, idx) => (
             <ClipRow
-              key={`${clip.id}-${sortBy}-${search}-${creatorFilter}-${statusFilter}-${selectedChannel}`}
+              key={`${clip.id}-${sortBy}-${search}-${creatorFilter}-${gameFilter}-${statusFilter}-${selectedChannel}`}
               clip={clip}
               onStatusChange={handleStatusChange}
               collections={collections}

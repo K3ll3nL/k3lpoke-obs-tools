@@ -448,7 +448,7 @@
       prevSlot.wrap.classList.remove('active')
       prevSlot.video.pause()
 
-      if (clip.trim_start != null) nextSlot.video.currentTime = clip.trim_start
+      // trim_start was already set during preload — do not re-seek here (causes audio desync)
       applyVolume(slotIdx, clip.volume)
       if (clip.envelope?.length > 0) {
         const envVol = getEnvelopeVol(clip.envelope, clip.trim_start ?? 0)
@@ -480,7 +480,12 @@
         slot.video.src = url
         slot.video.load()
         slot.wrap.classList.add('active')
-        if (clip.trim_start != null) slot.video.currentTime = clip.trim_start
+        if (clip.trim_start != null) {
+          await new Promise(resolve => {
+            slot.video.addEventListener('seeked', resolve, { once: true })
+            slot.video.currentTime = clip.trim_start
+          })
+        }
         applyVolume(activeSlot, clip.volume)
         if (clip.envelope?.length > 0) {
           const envVol = getEnvelopeVol(clip.envelope, clip.trim_start ?? 0)

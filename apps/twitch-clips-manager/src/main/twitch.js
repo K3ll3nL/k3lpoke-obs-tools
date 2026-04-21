@@ -128,13 +128,23 @@ export async function fetchClips({ broadcasterId, cursor, limit = 20, startedAt 
   if (cursor) params.after = cursor
   if (startedAt) params.started_at = startedAt
   const data = await apiGet('/clips', params)
+
+  const gameIds = [...new Set(data.data.map(c => c.game_id).filter(Boolean))]
+  let gameNames = {}
+  if (gameIds.length > 0) {
+    try {
+      const gamesData = await apiGet('/games', { id: gameIds })
+      gamesData.data.forEach(g => { gameNames[g.id] = g.name })
+    } catch {}
+  }
+
   return {
-    clips: data.data.map(normalizeClip),
+    clips: data.data.map(c => normalizeClip(c, gameNames)),
     cursor: data.pagination?.cursor ?? null
   }
 }
 
-function normalizeClip(c) {
+function normalizeClip(c, gameNames = {}) {
   return {
     id: c.id,
     title: c.title,
@@ -146,9 +156,12 @@ function normalizeClip(c) {
     thumbnail_url: c.thumbnail_url,
     video_url: thumbnailToVideoUrl(c.thumbnail_url),
     view_count: c.view_count,
+    game_id: c.game_id,
+    game_name: gameNames[c.game_id] ?? null,
     duration: c.duration
   }
 }
+
 
 function thumbnailToVideoUrl(thumbnailUrl) {
   if (!thumbnailUrl) return null

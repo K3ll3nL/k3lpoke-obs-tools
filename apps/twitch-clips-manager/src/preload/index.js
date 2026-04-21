@@ -30,8 +30,10 @@ contextBridge.exposeInMainWorld('api', {
     getVideoUrl: (id) => invoke('clips:getVideoUrl', { id }),
     approve: (id) => invoke('clips:approve', { id }),
     deny: (id) => invoke('clips:deny', { id }),
+    setStatus: (id, status) => invoke('clips:setStatus', { id, status }),
     bulkApprove: (ids) => invoke('clips:bulkApprove', { ids }),
     bulkDeny: (ids) => invoke('clips:bulkDeny', { ids }),
+    bulkSetStatus: (ids, status) => invoke('clips:bulkSetStatus', { ids, status }),
     remove: (id) => invoke('clips:remove', { id }),
     reorder: (ids) => invoke('clips:reorder', { ids })
   },

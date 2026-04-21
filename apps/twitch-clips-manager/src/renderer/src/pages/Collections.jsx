@@ -1,5 +1,7 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react'
-import { Plus, Trash2, Check, X, Layers, ChevronDown } from 'lucide-react'
+import { Plus, Trash2, Check, X, Layers, ChevronDown, GripVertical } from 'lucide-react'
+import { getEnvelopeVol } from '../components/WaveformEditor'
+import { showUndo, showNotice } from '../lib/undoToast'
 
 const PRESET_COLORS = ['#9146ff', '#0984e3', '#00b894', '#e17055', '#fd79a8', '#fdcb6e']
 
@@ -9,13 +11,17 @@ function duration(secs) {
   return `${m}:${s.toString().padStart(2, '0')}`
 }
 
-function ClipCard({ clip, canRemove, onRemove, onDragStart }) {
+function ClipCard({ clip, canRemove, onRemove, onDragStart, onDragEnd, collections, selectedId }) {
   const [expanded, setExpanded] = useState(false)
   const [videoUrl, setVideoUrl] = useState(null)
   const [loadingUrl, setLoadingUrl] = useState(false)
   const [urlError, setUrlError] = useState(null)
   const videoRef = useRef(null)
-
+  const [volume, setVolume] = useState(clip.volume ?? 1.0)
+  const [clipEnvelope, setClipEnvelope] = useState(clip.envelope ?? [])
+  const [trimStart, setTrimStart] = useState(clip.trim_start ?? 0)
+  const [trimEnd, setTrimEnd] = useState(clip.trim_end ?? clip.duration ?? 0)
+  
   async function handleExpand() {
     const open = !expanded
     setExpanded(open)
@@ -28,14 +34,39 @@ function ClipCard({ clip, canRemove, onRemove, onDragStart }) {
     }
   }
 
+  useEffect(() => {
+    const vid = videoRef.current
+    if (!vid || !videoUrl) return
+    const onMeta = () => {
+      vid.currentTime = trimStart
+      vid.volume = Math.min(1, Math.max(0, volume))
+    }
+    const onTick = () => {
+      if (vid.currentTime >= trimEnd) { vid.pause(); return }
+      if (clipEnvelope.length > 0) {
+        const envVol = getEnvelopeVol(clipEnvelope, vid.currentTime)
+        vid.volume = Math.min(1, Math.max(0, volume * envVol))
+      }
+    }
+    vid.addEventListener('loadedmetadata', onMeta)
+    vid.addEventListener('timeupdate', onTick)
+    if (vid.readyState >= 1) vid.currentTime = trimStart
+    return () => {
+      vid.removeEventListener('loadedmetadata', onMeta)
+      vid.removeEventListener('timeupdate', onTick)
+    }
+  }, [videoUrl, trimStart, trimEnd, clipEnvelope, volume])
+
   return (
     <div
       draggable
       onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
       className={`rounded-lg border transition-colors overflow-hidden bg-twitch-surface ${expanded ? 'border-twitch-purple' : 'border-twitch-border'}`}
     >
-      <div className="flex items-center gap-3 p-3">
-        <div className="relative shrink-0 w-24 h-[54px] rounded overflow-hidden bg-black cursor-grab active:cursor-grabbing">
+      <div className="flex items-center gap-3 p-3 cursor-grab active:cursor-grabbing">
+        <GripVertical size={14} className="shrink-0 text-twitch-muted" />
+        <div className="relative shrink-0 w-24 h-[54px] rounded overflow-hidden bg-black">
           {clip.thumbnail_url
             ? <img src={clip.thumbnail_url} alt="" className="w-full h-full object-cover" />
             : <div className="w-full h-full bg-twitch-mid" />}
@@ -47,7 +78,12 @@ function ClipCard({ clip, canRemove, onRemove, onDragStart }) {
         </div>
         <button className="flex-1 min-w-0 text-left" onClick={handleExpand}>
           <p className="text-sm font-medium text-twitch-text truncate">{clip.title}</p>
-          <p className="text-xs text-twitch-muted">{clip.broadcaster_name}</p>
+          <div className="flex items-center gap-1.5 mt-0.5">
+            <p className="text-xs text-twitch-muted truncate">{clip.broadcaster_name}</p>
+            {(collections || []).filter(c => c.id !== selectedId && c.clipIds?.includes(clip.id)).map(c => (
+              <span key={c.id} className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: c.color }} title={c.name} />
+            ))}
+          </div>
         </button>
         {canRemove && (
           <button
@@ -108,6 +144,7 @@ export default function Collections() {
   const [editingId, setEditingId] = useState(null)
   const [editName, setEditName] = useState('')
   const [dragOverColId, setDragOverColId] = useState(null)
+  const [draggingClipId, setDraggingClipId] = useState(null)
 
   const allCollections = useMemo(() => [
     { id: 'main', name: 'Main Queue', color: '#9146ff', clipCount: approvedCount },
@@ -175,9 +212,19 @@ export default function Collections() {
     loadCollections()
   }
 
+  const draggingInCollectionIds = useMemo(() => {
+    if (!draggingClipId) return new Set()
+    return new Set(collections.filter(c => c.clipIds?.includes(draggingClipId)).map(c => c.id))
+  }, [draggingClipId, collections])
+
   function onDragStart(e, clipId) {
     e.dataTransfer.setData('application/json', JSON.stringify({ clipId, sourceColId: selectedId }))
     e.dataTransfer.effectAllowed = 'move'
+    setDraggingClipId(clipId)
+  }
+
+  function onDragEnd() {
+    setDraggingClipId(null)
   }
 
   async function onDrop(e, targetColId) {
@@ -187,12 +234,26 @@ export default function Collections() {
     try {
       const { clipId, sourceColId } = JSON.parse(e.dataTransfer.getData('application/json'))
       if (targetColId === sourceColId) return
+      const targetName = allCollections.find(c => c.id === targetColId)?.name ?? 'collection'
+      const alreadyIn = collections.find(c => c.id === targetColId)?.clipIds?.includes(clipId)
+      if (alreadyIn) {
+        showNotice(`Already in ${targetName}`)
+        return
+      }
       await window.api.collections.addClip(targetColId, clipId)
       if (sourceColId !== 'main') {
         await window.api.collections.removeClip(sourceColId, clipId)
         setClips(prev => prev.filter(c => c.id !== clipId))
       }
       loadCollections()
+      showUndo(`Added to ${targetName}`, async () => {
+        await window.api.collections.removeClip(targetColId, clipId)
+        if (sourceColId !== 'main') {
+          await window.api.collections.addClip(sourceColId, clipId)
+          if (selectedId === sourceColId) loadSelectedClips()
+        }
+        loadCollections()
+      })
     } catch {}
   }
 
@@ -235,7 +296,7 @@ export default function Collections() {
           </div>
         )}
 
-        <div className="flex-1 overflow-y-auto p-1 space-y-0.5">
+        <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
           {allCollections.map(col => (
             <div key={col.id} className="group relative">
               {editingId === col.id ? (
@@ -259,12 +320,17 @@ export default function Collections() {
                       ? 'bg-twitch-purple/20 border border-twitch-purple/50 text-twitch-text'
                       : selectedId === col.id
                         ? 'bg-twitch-surface text-twitch-text'
-                        : 'text-twitch-muted hover:bg-twitch-surface/60 hover:text-twitch-text'
+                        : draggingClipId && draggingInCollectionIds.has(col.id)
+                          ? 'text-amber-400/80 bg-amber-500/10 border border-amber-500/30'
+                          : 'text-twitch-muted hover:bg-twitch-surface/60 hover:text-twitch-text'
                   }`}
                 >
                   <span className="w-2 h-2 rounded-full shrink-0" style={{ background: col.color }} />
                   <span className="flex-1 text-sm truncate">{col.name}</span>
-                  <span className="text-[10px] text-twitch-border shrink-0">{col.clipCount ?? 0}</span>
+                  {draggingClipId && draggingInCollectionIds.has(col.id)
+                    ? <Check size={11} className="text-amber-400 shrink-0" />
+                    : <span className="text-[10px] text-twitch-border shrink-0">{col.clipCount ?? 0}</span>
+                  }
                 </button>
               )}
               {col.id !== 'main' && editingId !== col.id && (
@@ -310,6 +376,9 @@ export default function Collections() {
               canRemove={selectedId !== 'main'}
               onRemove={() => handleRemoveClip(clip.id)}
               onDragStart={e => onDragStart(e, clip.id)}
+              onDragEnd={onDragEnd}
+              collections={collections}
+              selectedId={selectedId}
             />
           ))}
         </div>

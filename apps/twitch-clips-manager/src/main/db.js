@@ -15,6 +15,16 @@ export function initDb() {
   data.settings      ??= {}
   data.collections   ??= []
   data.playbackConfig ??= { mode: 'single', activeCollectionId: 'main', weightedSets: [] }
+
+  // Remove clipIds that no longer exist in data.clips
+  const knownIds = new Set(data.clips.map(c => c.id))
+  let dirty = false
+  for (const col of data.collections) {
+    const before = col.clipIds.length
+    col.clipIds = col.clipIds.filter(id => knownIds.has(id))
+    if (col.clipIds.length !== before) dirty = true
+  }
+  if (dirty) save()
 }
 
 function save() {
@@ -24,7 +34,13 @@ function save() {
 // ── Clips ──────────────────────────────────────────────────────────────────
 
 export function upsertClip(clip) {
-  if (data.clips.find(c => c.id === clip.id)) return
+  const existing = data.clips.find(c => c.id === clip.id)
+  if (existing) {
+    if (clip.game_name !== undefined) existing.game_name = clip.game_name
+    if (clip.view_count !== undefined) existing.view_count = clip.view_count
+    save()
+    return
+  }
   data.clips.push({ ...clip, status: 'pending', queue_position: null, added_at: new Date().toISOString(), volume: 1.0 })
   save()
 }
@@ -91,6 +107,8 @@ export function setClipStatus(id, status) {
   if (status === 'approved') {
     const maxPos = Math.max(0, ...data.clips.filter(c => c.status === 'approved').map(c => c.queue_position ?? 0))
     clip.queue_position = maxPos + 1
+  } else {
+    clip.queue_position = null
   }
   save()
 }
@@ -101,6 +119,9 @@ export function bulkSetStatus(ids, status) {
 
 export function removeClip(id) {
   data.clips = data.clips.filter(c => c.id !== id)
+  for (const col of data.collections) {
+    col.clipIds = col.clipIds.filter(cid => cid !== id)
+  }
   save()
 }
 

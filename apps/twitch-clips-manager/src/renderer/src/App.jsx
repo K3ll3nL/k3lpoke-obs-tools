@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import Nav from './components/Nav'
 import RightPanel from './components/RightPanel'
+import UndoToast from './components/UndoToast'
 import Setup from './pages/Setup'
 import Updates from './pages/Updates'
 import Review from './pages/Review'
@@ -87,6 +88,7 @@ export default function App() {
         </Routes>
       </main>
       {isSetup && !hidePanel && <RightPanel />}
+      <UndoToast />
     </div>
   )
 }
