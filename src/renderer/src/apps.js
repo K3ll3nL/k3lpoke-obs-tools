@@ -1,4 +1,5 @@
-import { Bell, ClipboardCheck, Settings, ListVideo, Layers, Monitor, LayoutGrid } from 'lucide-react'
+import React from 'react'
+import { Bell, ClipboardCheck, Settings, Layers, Monitor, LayoutGrid } from 'lucide-react'
 
 /**
  * Central registry of all K3LPoke apps.
@@ -23,6 +24,21 @@ export const APP_REGISTRY = [
       { to: '/collections', icon: Layers,         label: 'Collections' },
       { to: '/clip-settings', icon: Settings,     label: 'Settings'    },
     ],
+    image: () => React.createElement('svg', {
+      width: '20', 
+      height: '20', 
+      viewBox: '0 0 24 24', 
+      fill: 'none', 
+      stroke: 'white', 
+      strokeWidth: '2', 
+      strokeLinecap: 'round', 
+      strokeLinejoin: 'round'
+    }, [
+      React.createElement('path', { key: 'path1', d: 'M 20.2 6 3 11 l -.9 -2.4 c -.3 -1.1 .3 -2.2 1.3-2.6 l 13.5 -4.7 c 1-.3 2.1 .3 2.4 1.3 Z' }),
+      React.createElement('path', { key: 'path2', d: 'm 6.2 5.3 3.1 3.9' }),
+      React.createElement('path', { key: 'path3', d: 'm 12.4 3.4 3.1 3.9' }),
+      React.createElement('path', { key: 'path4', d: 'M 3 11h18v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z' })
+    ])
   },
   {
     id: 'quick-shiny-scene',
@@ -120,3 +136,4 @@ export function appForRoute(pathname) {
   }
   return null
 }
+
