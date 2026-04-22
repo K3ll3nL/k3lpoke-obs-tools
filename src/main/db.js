@@ -39,17 +39,22 @@ export function initDb() {
   data.shinyLayouts        ??= []
   data.shinyActiveLayoutId ??= null
 
-  // Ensure base layout exists and uses %-based positions
+  // Ensure base layout exists with all current devices using %-based positions
   const base = data.shinyLayouts.find(l => l.id === 'base')
+  const currentDeviceIds = new Set(data.shinyDevices.map(d => d.id))
+  const basePositionIds = new Set((base?.positions ?? []).map(p => p.deviceId))
+  const baseNeedsUpdate = base && (
+    base.positions?.some(p => (p.w ?? 0) >= 10) ||  // pixel-based migration
+    ![...currentDeviceIds].every(id => basePositionIds.has(id)) ||  // missing new devices
+    ![...basePositionIds].every(id => currentDeviceIds.has(id))  // removed devices
+  )
+
   if (!base) {
-    data.shinyLayouts.unshift({ id: 'base', name: 'All Devices', triggerScenes: [], positions: computeDefaultPositions(data.shinyDevices.map(d => d.id)) })
+    data.shinyLayouts.unshift({ id: 'base', name: 'All Devices', triggerScenes: [], positions: computeDefaultPositions([...currentDeviceIds]) })
     save()
-  } else {
-    // Migrate any old pixel-based positions (w >= 10 means px, not %)
-    if (base.positions?.some(p => (p.w ?? 0) >= 10)) {
-      base.positions = computeDefaultPositions(data.shinyDevices.map(d => d.id))
-      save()
-    }
+  } else if (baseNeedsUpdate) {
+    base.positions = computeDefaultPositions([...currentDeviceIds])
+    save()
   }
   // Migrate pixel positions in custom layouts
   let migrated = false
