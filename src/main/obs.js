@@ -41,9 +41,17 @@ export async function connectOBS({ host = 'localhost', port = 4455, password = '
 }
 
 export async function disconnectOBS() {
-  await obs.disconnect()
+  try {
+    await obs.disconnect()
+  } catch (err) {
+    // Ignore errors during disconnect (object already destroyed, etc)
+  }
   connected = false
-  emit({ connected: false })
+  try {
+    emit({ connected: false })
+  } catch (err) {
+    // Ignore errors if event listeners fail
+  }
 }
 
 export function isConnected() {

@@ -15,6 +15,7 @@ const isDev = !app.isPackaged
 app.setPath('userData', path.join(app.getPath('appData'), 'k3lpoke-obs-tools'))
 
 let mainWindow
+let autoFetchInterval
 
 async function createWindow() {
   mainWindow = new BrowserWindow({
@@ -69,7 +70,7 @@ app.whenReady().then(async () => {
     registerIpcHandlers(win)
 
     // Setup auto-updater
-    autoUpdater.checkForUpdatesAndNotify()
+    autoUpdater.checkForUpdatesAndNotify().catch(() => {})
     autoUpdater.on('update-available', () => {
       win.webContents.send('app:update-available')
     })
@@ -101,7 +102,7 @@ app.whenReady().then(async () => {
     })
 
     // Hourly incremental clip fetch for all channels
-    setInterval(() => runAutoFetch(win), 60 * 60 * 1000)
+    autoFetchInterval = setInterval(() => runAutoFetch(win), 60 * 60 * 1000)
 
     // Auto-reconnect OBS using saved credentials
     const obsHost = getSetting('obsHost')
@@ -119,6 +120,7 @@ app.whenReady().then(async () => {
 })
 
 app.on('before-quit', async () => {
+  if (autoFetchInterval) clearInterval(autoFetchInterval)
   broadcastToOverlay({ type: 'stop' })
   await disconnectOBS().catch(() => {})
   await closeServer().catch(() => {})
