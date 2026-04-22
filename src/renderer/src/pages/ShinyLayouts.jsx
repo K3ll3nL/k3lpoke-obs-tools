@@ -178,11 +178,16 @@ function CanvasEditor({ layout, devices, onSetPosition, onReplacePositions, onRe
         const nw = Math.max(5, dragging.origW + (px - dragging.startPx) / canvasW * 100)
         updated = { ...pos, w: nw, h: nw }
       }
-      let resolvedOthers = others
-      if (dragging.mode === 'resize') {
+      let snapped, resolvedOthers
+      if (dragging.mode === 'move') {
+        // Move: snap against unchanged neighbors
+        snapped = others.length > 0 ? snapAdjacent(updated, others) : updated
+        resolvedOthers = others
+      } else {
+        // Resize: push touching neighbors, then snap if needed
         resolvedOthers = pushNeighborsAfterResize(updated, others, pos)
+        snapped = others.length > 0 ? snapAdjacent(updated, resolvedOthers) : updated
       }
-      const snapped = (dragging.mode === 'move' && others.length > 0) ? snapAdjacent(updated, resolvedOthers) : updated
       const final = normalizeToCanvas([...resolvedOthers, snapped])
       onReplacePositions(layout.id, final)
       return final
