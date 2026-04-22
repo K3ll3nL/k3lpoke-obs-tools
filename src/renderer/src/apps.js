@@ -8,7 +8,7 @@ import { Bell, ClipboardCheck, Settings, ListVideo, Layers, Monitor, LayoutGrid 
 export const APP_REGISTRY = [
   {
     id: 'clip-queue',
-    name: 'Clip Queue',
+    name: 'Twitch Clip Player',
     tagline: 'Queue Twitch clips for OBS',
     description:
       'Review, approve, and play Twitch clips in OBS with volume control, trim, and envelope editing. Clips shuffle and loop automatically as a browser source.',
@@ -16,7 +16,7 @@ export const APP_REGISTRY = [
     gradient: 'from-violet-600 to-purple-800',
     defaultRoute: '/updates',
     core: true,
-    version: '0.1.0',
+    version: '1.0.1',
     navItems: [
       { to: '/updates',     icon: Bell,           label: 'Updates'     },
       { to: '/review',      icon: ClipboardCheck, label: 'Review'      },
@@ -33,8 +33,8 @@ export const APP_REGISTRY = [
     color: '#FFD700',
     gradient: 'from-yellow-400 to-amber-600',
     defaultRoute: '/shiny/devices',
-    core: false,
-    version: '0.1.0',
+    core: true,
+    version: '0.1.1',
     navItems: [
       { to: '/shiny/devices', icon: Monitor,    label: 'Devices' },
       { to: '/shiny/layouts', icon: LayoutGrid, label: 'Layouts' },
