@@ -1,6 +1,6 @@
 {
   "name": "k3lpoke-obs-tools",
-  "version": "1.0.0",
+  "version": "0.1.1",
   "description": "K3lPoke OBS Tools — Twitch clip queue, overlay, and scene management",
   "author": "K3lPoke",
   "main": "out/main/index.js",
