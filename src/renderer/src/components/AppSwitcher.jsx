@@ -59,7 +59,10 @@ export default function AppSwitcher({ subscribedIds, onClose }) {
           return (
             <button
               key={app.id}
-              style={CARD_ANIM(i)}
+              style={{
+                ...CARD_ANIM(i),
+                ...(active ? { background: `${app.color}20` } : {})
+              }}
               onClick={() => handleAppClick(app)}
               disabled={!available}
               className={`
@@ -71,7 +74,6 @@ export default function AppSwitcher({ subscribedIds, onClose }) {
                     : 'text-twitch-border cursor-not-allowed'
                 }
               `}
-              style={active ? { background: `${app.color}20` } : {}}
             >
               {/* Color dot / icon */}
               <div
