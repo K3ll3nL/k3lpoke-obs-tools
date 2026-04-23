@@ -1,4 +1,4 @@
-import { ipcMain } from 'electron'
+import { ipcMain, app } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import {
   initTwitch, getTwitchState, setClientId, startOAuthFlow, logout,
@@ -361,6 +361,15 @@ export function registerIpcHandlers(mainWindow) {
   handle('shiny:layouts:setPositionScene', ({ id, deviceId, shinyScene }) => { const r = setShinyLayoutPositionScene(id, deviceId, shinyScene); notifyShinyLayoutChanged(); return r })
 
   // ── Updates ────────────────────────────────────────────────────────────────
+
+  handle('app:getUpdateState', () => {
+    const updateInfo = autoUpdater.updateInfo
+    return {
+      hasUpdate: !!updateInfo,
+      version: updateInfo?.version,
+      currentVersion: app.getVersion()
+    }
+  })
 
   handle('app:installUpdate', () => {
     autoUpdater.quitAndInstall()

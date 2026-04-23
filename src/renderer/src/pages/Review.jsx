@@ -117,9 +117,11 @@ const ClipRow = React.memo(function ClipRow({ clip, onStatusChange, collections,
     await window.api.clips.approve(clip.id)
     onStatusChange(clip.id, 'approved')
     setExpanded(false)
+    window.dispatchEvent(new CustomEvent('clips-status-changed', { detail: { clipId: clip.id, status: 'approved' } }))
     showUndo('Clip approved', async () => {
       await window.api.clips.setStatus(clip.id, oldStatus)
       onStatusChange(clip.id, oldStatus)
+      window.dispatchEvent(new CustomEvent('clips-status-changed', { detail: { clipId: clip.id, status: oldStatus } }))
     }, [clip.id])
   }
 
@@ -128,9 +130,11 @@ const ClipRow = React.memo(function ClipRow({ clip, onStatusChange, collections,
     await window.api.clips.deny(clip.id)
     onStatusChange(clip.id, 'denied')
     setExpanded(false)
+    window.dispatchEvent(new CustomEvent('clips-status-changed', { detail: { clipId: clip.id, status: 'denied' } }))
     showUndo('Clip denied', async () => {
       await window.api.clips.setStatus(clip.id, oldStatus)
       onStatusChange(clip.id, oldStatus)
+      window.dispatchEvent(new CustomEvent('clips-status-changed', { detail: { clipId: clip.id, status: oldStatus } }))
     })
   }
 
@@ -425,9 +429,11 @@ export default function Review() {
     await window.api.clips.bulkApprove(ids)
     setAllClips(prev => prev.map(c => ids.includes(c.id) ? { ...c, status: 'approved' } : c))
     setSelectedIds(new Set())
+    ids.forEach(id => window.dispatchEvent(new CustomEvent('clips-status-changed', { detail: { clipId: id, status: 'approved' } })))
     showUndo(`${ids.length} clip${ids.length !== 1 ? 's' : ''} approved`, async () => {
       for (const id of ids) await window.api.clips.setStatus(id, oldStatuses[id])
       setAllClips(prev => prev.map(c => ids.includes(c.id) ? { ...c, status: oldStatuses[c.id] } : c))
+      ids.forEach(id => window.dispatchEvent(new CustomEvent('clips-status-changed', { detail: { clipId: id, status: oldStatuses[id] } })))
     }, ids)
   }
 
@@ -437,9 +443,11 @@ export default function Review() {
     await window.api.clips.bulkDeny(ids)
     setAllClips(prev => prev.map(c => ids.includes(c.id) ? { ...c, status: 'denied' } : c))
     setSelectedIds(new Set())
+    ids.forEach(id => window.dispatchEvent(new CustomEvent('clips-status-changed', { detail: { clipId: id, status: 'denied' } })))
     showUndo(`${ids.length} clip${ids.length !== 1 ? 's' : ''} denied`, async () => {
       for (const id of ids) await window.api.clips.setStatus(id, oldStatuses[id])
       setAllClips(prev => prev.map(c => ids.includes(c.id) ? { ...c, status: oldStatuses[c.id] } : c))
+      ids.forEach(id => window.dispatchEvent(new CustomEvent('clips-status-changed', { detail: { clipId: id, status: oldStatuses[id] } })))
     })
   }
 
@@ -562,7 +570,7 @@ export default function Review() {
             <input className="input pl-7 text-sm" placeholder="Search clips..." value={search} onChange={e => setSearch(e.target.value)} />
           </div>
           <select className="input text-sm w-40" value={creatorFilter} onChange={e => setCreatorFilter(e.target.value)}>
-            <option value="">All creators</option>
+            <option value="">All clip creators</option>
             {creators.map(c => <option key={c} value={c}>{c}</option>)}
           </select>
           {games.length > 0 && (

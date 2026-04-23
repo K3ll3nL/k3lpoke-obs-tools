@@ -115,6 +115,7 @@ contextBridge.exposeInMainWorld('api', {
   app: {
     onUpdateAvailable: (cb) => ipcRenderer.on('app:update-available', (_, d) => cb(d)),
     onUpdateReady: (cb) => ipcRenderer.on('app:update-ready', (_, d) => cb(d)),
+    getUpdateState: () => invoke('app:getUpdateState'),
     installUpdate: () => invoke('app:installUpdate')
   }
 });

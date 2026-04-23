@@ -173,6 +173,7 @@ export default function Collections() {
     function handleClickOutside(e) {
       if (!e.target.closest('.collection-edit-menu')) {
         setEditingColId(null)
+        setShowColorPicker({})
       }
     }
     document.addEventListener('mousedown', handleClickOutside)
@@ -387,9 +388,18 @@ export default function Collections() {
                         onClick={e => {
                           e.stopPropagation()
                           setEditingColId(null)
-                          setShowColorPicker(prev => ({ ...prev, [col.id]: !prev[col.id] }))
+                          startRename(col)
                         }}
                         className="w-full text-left px-3 py-1.5 text-sm flex items-center gap-2 hover:bg-twitch-mid transition-colors text-twitch-text"
+                      >
+                        Edit Name
+                      </button>
+                      <button
+                        onClick={e => {
+                          e.stopPropagation()
+                          setShowColorPicker(prev => ({ ...prev, [col.id]: !prev[col.id] }))
+                        }}
+                        className="w-full text-left px-3 py-1.5 text-sm flex items-center gap-2 hover:bg-twitch-mid transition-colors text-twitch-text border-t border-twitch-border"
                       >
                         <span className="w-2 h-2 rounded-full" style={{ background: col.color }} />
                         Change Color

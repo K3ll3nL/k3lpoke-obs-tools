@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { LogOut } from 'lucide-react'
+import { LogOut, Download } from 'lucide-react'
 
 export default function Settings({ twitchUser, obsConnected }) {
   const [obsHost, setObsHost] = useState('localhost')
@@ -7,6 +7,8 @@ export default function Settings({ twitchUser, obsConnected }) {
   const [obsPass, setObsPass] = useState('')
   const [obsLoading, setObsLoading] = useState(false)
   const [obsError, setObsError] = useState(null)
+  const [updateState, setUpdateState] = useState(null)
+  const [installing, setInstalling] = useState(false)
 
   useEffect(() => {
     window.api.settings.getAll().then(r => {
@@ -16,6 +18,25 @@ export default function Settings({ twitchUser, obsConnected }) {
       if (s.obsPort)            setObsPort(String(s.obsPort))
       if (s.obsPassword != null) setObsPass(s.obsPassword)
     })
+
+    window.api.app.getUpdateState().then(r => {
+      if (r.ok) setUpdateState(r.data)
+    })
+
+    const handleUpdateAvailable = () => {
+      window.api.app.getUpdateState().then(r => {
+        if (r.ok) setUpdateState(r.data)
+      })
+    }
+
+    const handleUpdateReady = () => {
+      window.api.app.getUpdateState().then(r => {
+        if (r.ok) setUpdateState({ ...r.data, isReady: true })
+      })
+    }
+
+    window.api.onUpdateAvailable?.(handleUpdateAvailable)
+    window.api.onUpdateReady?.(handleUpdateReady)
   }, [])
 
   async function reconnectOBS() {
@@ -33,11 +54,35 @@ export default function Settings({ twitchUser, obsConnected }) {
     }
   }
 
+  async function handleInstallUpdate() {
+    setInstalling(true)
+    await window.api.app.installUpdate()
+  }
+
   return (
     <div className="h-full overflow-y-auto p-6">
       <h1 className="font-bold text-xl text-twitch-text mb-6">Connections</h1>
 
       <div className="max-w-2xl space-y-6">
+
+        {/* App Update */}
+        {updateState?.hasUpdate && (
+          <section className="card p-5 bg-blue-900/20 border border-blue-600/30">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="font-semibold text-twitch-text mb-1">Update Available</h2>
+                <p className="text-xs text-twitch-muted">Version {updateState.version} is ready to install</p>
+              </div>
+              <button
+                className="btn-purple flex items-center gap-1.5 text-xs"
+                onClick={handleInstallUpdate}
+                disabled={installing}
+              >
+                <Download size={13} /> {installing ? 'Installing...' : 'Install'}
+              </button>
+            </div>
+          </section>
+        )}
 
         {/* Twitch Account */}
         <section className="card p-5">
