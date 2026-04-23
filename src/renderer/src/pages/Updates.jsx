@@ -222,7 +222,7 @@ export default function Updates() {
   const [lastCheck, setLastCheck] = useState(null)
   const lastCheckRef = useRef(null)
   const [collections, setCollections] = useState([])
-  const [displayCount, setDisplayCount] = useState(20)
+  const [displayCount, setDisplayCount] = useState(100)
   const sentinelRef = useRef(null)
 
   // Selection
@@ -267,13 +267,21 @@ export default function Updates() {
   }, [clips])
 
   useEffect(() => {
+    if (displayCount >= clips.length) return
+    const timer = setInterval(() => {
+      setDisplayCount(prev => Math.min(prev + 20, clips.length))
+    }, 1200)
+    return () => clearInterval(timer)
+  }, [displayCount, clips.length])
+
+  useEffect(() => {
     const sentinel = sentinelRef.current
     if (!sentinel) return
     const observer = new IntersectionObserver(([entry]) => {
       if (entry.isIntersecting && displayCount < clips.length) {
         setDisplayCount(prev => Math.min(prev + 20, clips.length))
       }
-    }, { rootMargin: '200px' })
+    }, { rootMargin: '100px' })
     observer.observe(sentinel)
     return () => observer.disconnect()
   }, [displayCount, clips.length])

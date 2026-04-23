@@ -327,7 +327,7 @@ export default function Review() {
   const [gameFilter, setGameFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
   const [collections, setCollections] = useState([])
-  const [displayCount, setDisplayCount] = useState(20)
+  const [displayCount, setDisplayCount] = useState(100)
   const sentinelRef = useRef(null)
 
   // Selection
@@ -363,16 +363,24 @@ export default function Review() {
   useEffect(() => { if (selectedChannel) loadClips() }, [selectedChannel])
 
   useEffect(() => {
+    if (displayCount >= allClips.length) return
+    const timer = setInterval(() => {
+      setDisplayCount(prev => Math.min(prev + 20, allClips.length))
+    }, 1200)
+    return () => clearInterval(timer)
+  }, [displayCount, allClips.length])
+
+  useEffect(() => {
     const sentinel = sentinelRef.current
     if (!sentinel) return
     const observer = new IntersectionObserver(([entry]) => {
-      if (entry.isIntersecting) {
-        setDisplayCount(prev => prev + 20)
+      if (entry.isIntersecting && displayCount < allClips.length) {
+        setDisplayCount(prev => Math.min(prev + 20, allClips.length))
       }
-    }, { rootMargin: '200px' })
+    }, { rootMargin: '100px' })
     observer.observe(sentinel)
     return () => observer.disconnect()
-  }, [])
+  }, [displayCount, allClips.length])
 
   async function loadClips() {
     setLoading(true)
