@@ -1,10 +1,10 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react'
-import { Check, X, ChevronDown, Search, Volume2, Scissors, Activity, Tag, Plus } from 'lucide-react'
+import { Check, X, ChevronDown, Search, Volume2, Scissors, Activity, Tag } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import WaveformEditor, { getEnvelopeVol } from '../components/WaveformEditor'
 import TrimBar from '../components/TrimBar'
-import CreateCollectionModal from '../components/CreateCollectionModal'
 import { showUndo } from '../lib/undoToast'
+import CollectionPicker from '../components/CollectionPicker'
 
 function duration(secs) {
   const m = Math.floor(secs / 60)
@@ -138,7 +138,7 @@ const ClipRow = React.memo(function ClipRow({ clip, onStatusChange, collections,
     })
   }
 
-  const showTagBtn = clip.status === 'approved' && collections?.length > 0
+  const showTagBtn = clip.status === 'approved'
 
   return (
     <div className={`group rounded-lg border transition-colors overflow-hidden ${
@@ -216,63 +216,37 @@ const ClipRow = React.memo(function ClipRow({ clip, onStatusChange, collections,
 
           {/* Tag button — always occupies the 3rd slot to keep heights consistent */}
           {showTagBtn ? (
-            <button
-              ref={tagBtnRef}
-              onClick={openColMenu}
-              title="Add to collection"
-              className={`w-8 h-8 rounded flex items-center justify-center transition-colors relative ${
-                memberOf.size > 0 ? 'bg-twitch-purple/20 text-twitch-purple' : 'text-twitch-muted hover:bg-twitch-surface hover:text-twitch-text'
-              }`}
-            >
-              <Tag size={13} />
-              {memberOf.size > 0 && (
-                <span className="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-twitch-purple text-white text-[8px] flex items-center justify-center font-bold">
-                  {memberOf.size}
-                </span>
+            <CollectionPicker
+              mode="single"
+              memberOf={memberOf}
+              onToggle={toggleCollection}
+              onCreate={handleCollectionCreated}
+              onCollectionsChanged={onCollectionsChanged}
+              renderTrigger={(ref, onClick) => (
+                <button
+                  ref={ref}
+                  onClick={onClick}
+                  title="Add to collection"
+                  className={`w-8 h-8 rounded flex items-center justify-center transition-colors relative ${
+                    memberOf.size > 0 ? 'bg-twitch-purple/20 text-twitch-purple' : 'text-twitch-muted hover:bg-twitch-surface hover:text-twitch-text'
+                  }`}
+                >
+                  <Tag size={13} />
+                  {memberOf.size > 0 && (
+                    <span className="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-twitch-purple text-white text-[8px] flex items-center justify-center font-bold">
+                      {memberOf.size}
+                    </span>
+                  )}
+                </button>
               )}
-            </button>
+            />
           ) : (
             <div className="w-8 h-8 invisible" aria-hidden />
           )}
         </div>
       </div>
 
-      {/* Fixed-position collections dropdown */}
-      {showColMenu && colMenuPos && (
-        <div
-          ref={colMenuRef}
-          style={{ position: 'fixed', right: colMenuPos.right, top: colMenuPos.top, zIndex: 9999 }}
-          className="w-48 bg-twitch-mid border border-twitch-border rounded-lg shadow-xl py-1"
-        >
-          <p className="px-3 py-1.5 text-[10px] text-twitch-muted font-semibold uppercase tracking-wide border-b border-twitch-border mb-1">
-            Collections
-          </p>
-          {collections.map(col => (
-            <button
-              key={col.id}
-              onClick={() => toggleCollection(col.id)}
-              className="w-full text-left px-3 py-1.5 text-sm flex items-center gap-2 hover:bg-twitch-surface transition-colors"
-            >
-              <span className="w-2 h-2 rounded-full shrink-0" style={{ background: col.color }} />
-              <span className="flex-1 truncate text-twitch-text">{col.name}</span>
-              {memberOf.has(col.id) && <Check size={11} className="text-twitch-purple shrink-0" />}
-            </button>
-          ))}
-          <button
-            onClick={() => setShowCreateCol(true)}
-            className="w-full text-left px-3 py-1.5 text-sm flex items-center gap-2 hover:bg-twitch-surface transition-colors border-t border-twitch-border text-twitch-muted hover:text-twitch-text"
-          >
-            <Plus size={13} />
-            <span className="flex-1">New Collection</span>
-          </button>
-        </div>
-      )}
 
-      <CreateCollectionModal
-        isOpen={showCreateCol}
-        onClose={() => setShowCreateCol(false)}
-        onCreate={handleCollectionCreated}
-      />
 
       {/* Expanded section */}
       {expanded && (
@@ -337,16 +311,6 @@ export default function Review() {
   // Selection
   const [selectedIds, setSelectedIds] = useState(new Set())
   const lastSelIdxRef = useRef(null)
-  const [showAddToCol, setShowAddToCol] = useState(false)
-  const addToColRef = useRef(null)
-  const [showCreateColBulk, setShowCreateColBulk] = useState(false)
-
-  useEffect(() => {
-    if (!showAddToCol) return
-    function h(e) { if (!addToColRef.current?.contains(e.target)) setShowAddToCol(false) }
-    document.addEventListener('mousedown', h)
-    return () => document.removeEventListener('mousedown', h)
-  }, [showAddToCol])
 
   async function loadCollections() {
     const r = await window.api.collections.list()
@@ -365,6 +329,12 @@ export default function Review() {
   }, [])
 
   useEffect(() => { if (selectedChannel) loadClips() }, [selectedChannel])
+
+  useEffect(() => {
+    function onCollectionsChanged() { loadCollections() }
+    window.addEventListener('collections-changed', onCollectionsChanged)
+    return () => window.removeEventListener('collections-changed', onCollectionsChanged)
+  }, [])
 
   useEffect(() => {
     if (displayCount >= allClips.length) return
@@ -451,22 +421,20 @@ export default function Review() {
     })
   }
 
-  async function addSelectedToCollection(colId) {
+  async function toggleSelectedInCollection(colId, shouldAdd) {
     const ids = [...selectedIds]
-    const colName = collections.find(c => c.id === colId)?.name ?? 'collection'
-    const unapproved = ids.filter(id => allClips.find(c => c.id === id)?.status !== 'approved')
-    if (unapproved.length) {
-      await window.api.clips.bulkApprove(unapproved)
-      setAllClips(prev => prev.map(c => unapproved.includes(c.id) ? { ...c, status: 'approved' } : c))
-    }
-    for (const id of ids) await window.api.collections.addClip(colId, id)
-    loadCollections()
-    setShowAddToCol(false)
-    setSelectedIds(new Set())
-    showUndo(`Added ${ids.length} to ${colName}`, async () => {
+    if (shouldAdd) {
+      const unapproved = ids.filter(id => allClips.find(c => c.id === id)?.status !== 'approved')
+      if (unapproved.length) {
+        await window.api.clips.bulkApprove(unapproved)
+        setAllClips(prev => prev.map(c => unapproved.includes(c.id) ? { ...c, status: 'approved' } : c))
+      }
+      for (const id of ids) await window.api.collections.addClip(colId, id)
+      loadCollections()
+    } else {
       for (const id of ids) await window.api.collections.removeClip(colId, id)
       loadCollections()
-    })
+    }
   }
 
   async function handleBulkCollectionCreated(newCol) {
@@ -478,12 +446,7 @@ export default function Review() {
     }
     for (const id of ids) await window.api.collections.addClip(newCol.id, id)
     loadCollections()
-    setShowCreateColBulk(false)
     setSelectedIds(new Set())
-    showUndo(`Added ${ids.length} to ${newCol.name}`, async () => {
-      for (const id of ids) await window.api.collections.removeClip(newCol.id, id)
-      loadCollections()
-    })
   }
 
   const creators = useMemo(() => {
@@ -597,34 +560,22 @@ export default function Review() {
             <button onClick={denySelected} className="btn-danger text-xs py-1 px-2.5 flex items-center gap-1">
               <X size={11} /> Deny
             </button>
-            {collections.length > 0 && (
-              <div className="relative" ref={addToColRef}>
+            <CollectionPicker
+              mode="batch"
+              selectedIds={selectedIds}
+              onSelect={toggleSelectedInCollection}
+              onCreate={handleBulkCollectionCreated}
+              onCollectionsChanged={loadCollections}
+              renderTrigger={(ref, onClick) => (
                 <button
-                  onClick={() => setShowAddToCol(v => !v)}
+                  ref={ref}
+                  onClick={onClick}
                   className="btn-ghost text-xs py-1 px-2.5 flex items-center gap-1"
                 >
                   <Tag size={11} /> Add to Collection <ChevronDown size={10} />
                 </button>
-                {showAddToCol && (
-                  <div className="absolute left-0 top-full mt-1 w-48 bg-twitch-mid border border-twitch-border rounded-lg shadow-xl z-50 py-1">
-                    {collections.map(col => (
-                      <button key={col.id} onClick={() => addSelectedToCollection(col.id)}
-                        className="w-full text-left px-3 py-1.5 text-sm flex items-center gap-2 hover:bg-twitch-surface transition-colors">
-                        <span className="w-2 h-2 rounded-full shrink-0" style={{ background: col.color }} />
-                        <span className="flex-1 truncate text-twitch-text">{col.name}</span>
-                      </button>
-                    ))}
-                    <button
-                      onClick={() => setShowCreateColBulk(true)}
-                      className="w-full text-left px-3 py-1.5 text-sm flex items-center gap-2 hover:bg-twitch-surface transition-colors border-t border-twitch-border text-twitch-muted hover:text-twitch-text"
-                    >
-                      <Plus size={13} />
-                      <span className="flex-1">New Collection</span>
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
+              )}
+            />
             <button onClick={() => { setSelectedIds(new Set()); lastSelIdxRef.current = null }}
               className="ml-auto text-xs text-twitch-muted hover:text-twitch-text transition-colors">
               Clear
@@ -664,11 +615,7 @@ export default function Review() {
         </div>
       </div>
 
-      <CreateCollectionModal
-        isOpen={showCreateColBulk}
-        onClose={() => setShowCreateColBulk(false)}
-        onCreate={handleBulkCollectionCreated}
-      />
+
     </div>
   )
 }

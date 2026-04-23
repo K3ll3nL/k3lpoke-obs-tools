@@ -75,6 +75,7 @@ export default function UndoToast() {
       for (const id of clipIds) await window.api.collections.addClip(colId, id)
       setMemberOf(prev => new Set([...prev, colId]))
     }
+    window.dispatchEvent(new CustomEvent('collections-changed'))
   }
 
   async function handleCollectionCreated(newCol) {
@@ -83,6 +84,7 @@ export default function UndoToast() {
     for (const id of clipIds) await window.api.collections.addClip(newCol.id, id)
     setMemberOf(prev => new Set([...prev, newCol.id]))
     setShowCreateCol(false)
+    window.dispatchEvent(new CustomEvent('collections-changed'))
   }
 
   function dismiss() {
@@ -165,7 +167,7 @@ export default function UndoToast() {
           style={{ position: 'fixed', right: colMenuPos.right, top: colMenuPos.top, zIndex: 1000 }}
           className="w-48 bg-twitch-mid border border-twitch-border rounded-lg shadow-xl py-1 pointer-events-auto"
         >
-          <p className="px-3 py-1.5 text-[10px] text-twitch-muted font-semibold uppercase tracking-wide border-b border-twitch-border mb-1">
+          <p className={`px-3 py-1.5 text-[10px] text-twitch-muted font-semibold uppercase tracking-wide border-b border-twitch-border ${collections.length > 0 ? 'mb-1' : ''}`}>
             Collections
           </p>
           {collections.map(col => (
