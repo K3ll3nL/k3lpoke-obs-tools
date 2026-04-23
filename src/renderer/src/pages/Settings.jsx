@@ -35,12 +35,12 @@ export default function Settings({ twitchUser, obsConnected }) {
       })
     }
 
-    window.api.app.onUpdateAvailable(handleUpdateAvailable)
-    window.api.app.onUpdateReady(handleUpdateReady)
+    window.api.onUpdateAvailable?.(handleUpdateAvailable)
+    window.api.onUpdateReady?.(handleUpdateReady)
 
     return () => {
-      window.api.app.onUpdateAvailable(() => {})
-      window.api.app.onUpdateReady(() => {})
+      window.api.onUpdateAvailable?.(() => {})
+      window.api.onUpdateReady?.(() => {})
     }
   }, [])
 
@@ -61,7 +61,7 @@ export default function Settings({ twitchUser, obsConnected }) {
 
   async function handleInstallUpdate() {
     setInstalling(true)
-    await window.api.app.installUpdate()
+    await window.api.installUpdate()
   }
 
   return (
