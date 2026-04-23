@@ -33,7 +33,7 @@
     ],
     "publish": {
       "provider": "github",
-      "owner": "K3lpoke",
+      "owner": "K3ll3nL",
       "repo": "twitch-clips-k3lpoke"
     },
     "win": {
