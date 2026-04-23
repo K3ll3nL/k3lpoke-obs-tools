@@ -148,6 +148,8 @@ export default function Collections() {
   const [editName, setEditName] = useState('')
   const [dragOverColId, setDragOverColId] = useState(null)
   const [draggingClipId, setDraggingClipId] = useState(null)
+  const [editingColId, setEditingColId] = useState(null)
+  const [showColorPicker, setShowColorPicker] = useState({})
 
   const allCollections = useMemo(() => [
     { id: 'main', name: 'Main Queue', color: '#9146ff', clipCount: approvedCount },
@@ -165,6 +167,17 @@ export default function Collections() {
   useEffect(() => { loadCollections() }, [])
 
   useEffect(() => { loadSelectedClips() }, [selectedId])
+
+  useEffect(() => {
+    if (!editingColId) return
+    function handleClickOutside(e) {
+      if (!e.target.closest('.collection-edit-menu')) {
+        setEditingColId(null)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [editingColId])
 
   async function loadSelectedClips() {
     setClipsLoading(true)
@@ -206,6 +219,12 @@ export default function Collections() {
   async function commitRename(id) {
     if (editName.trim()) await window.api.collections.update(id, editName.trim(), undefined)
     setEditingId(null)
+    loadCollections()
+  }
+
+  async function updateColor(id, color) {
+    const col = collections.find(c => c.id === id)
+    if (col) await window.api.collections.update(id, undefined, color)
     loadCollections()
   }
 
@@ -354,12 +373,58 @@ export default function Collections() {
                 </button>
               )}
               {col.id !== 'main' && editingId !== col.id && (
-                <button
-                  onClick={() => handleDelete(col.id)}
-                  className="absolute right-1.5 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 w-5 h-5 rounded flex items-center justify-center text-twitch-muted hover:text-red-400 transition-all"
+                <div className="collection-edit-menu">
+                  <button
+                    onClick={e => { e.stopPropagation(); setEditingColId(editingColId === col.id ? null : col.id) }}
+                    className="absolute right-1.5 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 w-5 h-5 rounded flex items-center justify-center text-twitch-muted hover:bg-twitch-surface hover:text-twitch-text transition-all"
+                    title="Edit collection"
+                  >
+                    <ChevronDown size={12} className={`transition-transform ${editingColId === col.id ? 'rotate-180' : ''}`} />
+                  </button>
+                  {editingColId === col.id && (
+                    <div className="absolute right-1.5 top-full mt-1 bg-twitch-surface border border-twitch-border rounded-lg shadow-xl z-50 py-1 w-32">
+                      <button
+                        onClick={e => {
+                          e.stopPropagation()
+                          setEditingColId(null)
+                          setShowColorPicker(prev => ({ ...prev, [col.id]: !prev[col.id] }))
+                        }}
+                        className="w-full text-left px-3 py-1.5 text-sm flex items-center gap-2 hover:bg-twitch-mid transition-colors text-twitch-text"
+                      >
+                        <span className="w-2 h-2 rounded-full" style={{ background: col.color }} />
+                        Change Color
+                      </button>
+                      <button
+                        onClick={() => { setEditingColId(null); handleDelete(col.id) }}
+                        className="w-full text-left px-3 py-1.5 text-sm flex items-center gap-2 hover:bg-twitch-mid transition-colors text-red-400 border-t border-twitch-border"
+                      >
+                        <Trash2 size={13} />
+                        Delete
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+              {col.id !== 'main' && editingColId === col.id && showColorPicker[col.id] && (
+                <div
+                  className="absolute right-1.5 top-full mt-12 bg-twitch-surface border border-twitch-border rounded-lg p-2 z-50"
+                  onClick={e => e.stopPropagation()}
                 >
-                  <Trash2 size={11} />
-                </button>
+                  <div className="flex gap-1.5">
+                    {PRESET_COLORS.map(c => (
+                      <button
+                        key={c}
+                        onClick={() => {
+                          updateColor(col.id, c)
+                          setShowColorPicker(prev => ({ ...prev, [col.id]: false }))
+                          setEditingColId(null)
+                        }}
+                        className="w-4 h-4 rounded-full border-2 transition-all"
+                        style={{ background: c, borderColor: col.color === c ? '#fff' : 'transparent' }}
+                      />
+                    ))}
+                  </div>
+                </div>
               )}
             </div>
           ))}

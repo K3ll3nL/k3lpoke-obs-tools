@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { Tag, Check } from 'lucide-react'
+import { Tag, Check, Plus } from 'lucide-react'
 import { subscribe } from '../lib/undoToast'
+import CreateCollectionModal from './CreateCollectionModal'
 
 export default function UndoToast() {
   const [toast, setToast] = useState(null)
@@ -14,6 +15,7 @@ export default function UndoToast() {
   const visTimerRef = useRef(null)
 
   const [memberOf, setMemberOf] = useState(new Set())
+  const [showCreateCol, setShowCreateCol] = useState(false)
 
   useEffect(() => {
     return subscribe(({ message, undoFn, id, duration, clipIds }) => {
@@ -27,6 +29,7 @@ export default function UndoToast() {
         setVisible(true)
         timerRef.current = setTimeout(() => dismiss(), duration ?? 10000)
       }, 50)
+      setShowCreateCol(false)
     })
   }, [])
 
@@ -72,6 +75,14 @@ export default function UndoToast() {
       for (const id of clipIds) await window.api.collections.addClip(colId, id)
       setMemberOf(prev => new Set([...prev, colId]))
     }
+  }
+
+  async function handleCollectionCreated(newCol) {
+    setCollections(prev => [...prev, newCol])
+    const clipIds = toast?.clipIds ?? []
+    for (const id of clipIds) await window.api.collections.addClip(newCol.id, id)
+    setMemberOf(prev => new Set([...prev, newCol.id]))
+    setShowCreateCol(false)
   }
 
   function dismiss() {
@@ -168,8 +179,21 @@ export default function UndoToast() {
               {memberOf.has(col.id) && <Check size={11} className="text-twitch-purple shrink-0" />}
             </button>
           ))}
+          <button
+            onClick={() => setShowCreateCol(true)}
+            className="w-full text-left px-3 py-1.5 text-sm flex items-center gap-2 hover:bg-twitch-surface transition-colors border-t border-twitch-border text-twitch-muted hover:text-twitch-text"
+          >
+            <Plus size={13} />
+            <span className="flex-1">New Collection</span>
+          </button>
         </div>
       )}
+
+      <CreateCollectionModal
+        isOpen={showCreateCol}
+        onClose={() => setShowCreateCol(false)}
+        onCreate={handleCollectionCreated}
+      />
 
       <style>{`
         @keyframes toast-progress {

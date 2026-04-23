@@ -1,8 +1,9 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react'
-import { Check, X, ChevronDown, Search, Volume2, Scissors, Activity, Tag } from 'lucide-react'
+import { Check, X, ChevronDown, Search, Volume2, Scissors, Activity, Tag, Plus } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import WaveformEditor, { getEnvelopeVol } from '../components/WaveformEditor'
 import TrimBar from '../components/TrimBar'
+import CreateCollectionModal from '../components/CreateCollectionModal'
 import { showUndo } from '../lib/undoToast'
 
 function duration(secs) {
@@ -30,6 +31,7 @@ const ClipRow = React.memo(function ClipRow({ clip, onStatusChange, collections,
   const [colMenuPos, setColMenuPos] = useState(null)
   const tagBtnRef = useRef(null)
   const colMenuRef = useRef(null)
+  const [showCreateCol, setShowCreateCol] = useState(false)
 
   const memberOf = useMemo(
     () => new Set((collections || []).filter(c => c.clipIds?.includes(clip.id)).map(c => c.id)),
@@ -67,6 +69,12 @@ const ClipRow = React.memo(function ClipRow({ clip, onStatusChange, collections,
       await window.api.collections.addClip(colId, clip.id)
     }
     onCollectionsChanged?.()
+  }
+
+  async function handleCollectionCreated(newCol) {
+    await window.api.collections.addClip(newCol.id, clip.id)
+    onCollectionsChanged?.()
+    setShowCreateCol(false)
   }
 
   async function saveVolume(val) { await window.api.clips.setVolume(clip.id, val) }
@@ -246,8 +254,21 @@ const ClipRow = React.memo(function ClipRow({ clip, onStatusChange, collections,
               {memberOf.has(col.id) && <Check size={11} className="text-twitch-purple shrink-0" />}
             </button>
           ))}
+          <button
+            onClick={() => setShowCreateCol(true)}
+            className="w-full text-left px-3 py-1.5 text-sm flex items-center gap-2 hover:bg-twitch-surface transition-colors border-t border-twitch-border text-twitch-muted hover:text-twitch-text"
+          >
+            <Plus size={13} />
+            <span className="flex-1">New Collection</span>
+          </button>
         </div>
       )}
+
+      <CreateCollectionModal
+        isOpen={showCreateCol}
+        onClose={() => setShowCreateCol(false)}
+        onCreate={handleCollectionCreated}
+      />
 
       {/* Expanded section */}
       {expanded && (
@@ -314,6 +335,7 @@ export default function Review() {
   const lastSelIdxRef = useRef(null)
   const [showAddToCol, setShowAddToCol] = useState(false)
   const addToColRef = useRef(null)
+  const [showCreateColBulk, setShowCreateColBulk] = useState(false)
 
   useEffect(() => {
     if (!showAddToCol) return
@@ -427,6 +449,23 @@ export default function Review() {
     setSelectedIds(new Set())
     showUndo(`Added ${ids.length} to ${colName}`, async () => {
       for (const id of ids) await window.api.collections.removeClip(colId, id)
+      loadCollections()
+    })
+  }
+
+  async function handleBulkCollectionCreated(newCol) {
+    const ids = [...selectedIds]
+    const unapproved = ids.filter(id => allClips.find(c => c.id === id)?.status !== 'approved')
+    if (unapproved.length) {
+      await window.api.clips.bulkApprove(unapproved)
+      setAllClips(prev => prev.map(c => unapproved.includes(c.id) ? { ...c, status: 'approved' } : c))
+    }
+    for (const id of ids) await window.api.collections.addClip(newCol.id, id)
+    loadCollections()
+    setShowCreateColBulk(false)
+    setSelectedIds(new Set())
+    showUndo(`Added ${ids.length} to ${newCol.name}`, async () => {
+      for (const id of ids) await window.api.collections.removeClip(newCol.id, id)
       loadCollections()
     })
   }
@@ -559,6 +598,13 @@ export default function Review() {
                         <span className="flex-1 truncate text-twitch-text">{col.name}</span>
                       </button>
                     ))}
+                    <button
+                      onClick={() => setShowCreateColBulk(true)}
+                      className="w-full text-left px-3 py-1.5 text-sm flex items-center gap-2 hover:bg-twitch-surface transition-colors border-t border-twitch-border text-twitch-muted hover:text-twitch-text"
+                    >
+                      <Plus size={13} />
+                      <span className="flex-1">New Collection</span>
+                    </button>
                   </div>
                 )}
               </div>
@@ -601,6 +647,12 @@ export default function Review() {
           <div ref={sentinelRef} className="h-2" />
         </div>
       </div>
+
+      <CreateCollectionModal
+        isOpen={showCreateColBulk}
+        onClose={() => setShowCreateColBulk(false)}
+        onCreate={handleBulkCollectionCreated}
+      />
     </div>
   )
 }
