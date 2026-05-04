@@ -7,6 +7,12 @@ let sceneChangedCallback = null
 let sceneListChangedCallback = null
 let connectedCallback = null
 
+// Auto-reconnect state
+let retryTimeout = null
+let isRetrying = false
+let lastConnectParams = null
+const RETRY_INTERVAL = 5000 // 5 seconds
+
 export function onStatusChange(cb) { statusCallback = cb }
 export function onSceneChanged(cb) { sceneChangedCallback = cb }
 export function onSceneListChanged(cb) { sceneListChangedCallback = cb }
@@ -23,8 +29,20 @@ function emit(status) {
 
 // Register disconnect/error handlers once at module level so they survive
 // unexpected OBS closes and don't accumulate on repeated reconnects.
-obs.on('ConnectionClosed', () => { if (connected) emit({ connected: false }) })
-obs.on('ConnectionError',  () => { if (connected) emit({ connected: false }) })
+obs.on('ConnectionClosed', () => {
+  if (connected) emit({ connected: false })
+  // Resume retrying if connection was lost and we have saved params
+  if (lastConnectParams && !isRetrying) {
+    scheduleRetry()
+  }
+})
+obs.on('ConnectionError',  () => {
+  if (connected) emit({ connected: false })
+  // Resume retrying if connection was lost and we have saved params
+  if (lastConnectParams && !isRetrying) {
+    scheduleRetry()
+  }
+})
 obs.on('error', () => {})
 obs.on('CurrentProgramSceneChanged', ({ sceneName }) => {
   try { sceneChangedCallback?.(sceneName) } catch {}
@@ -33,19 +51,39 @@ obs.on('SceneListChanged', () => {
   try { sceneListChangedCallback?.() } catch {}
 })
 
-export async function connectOBS({ host = 'localhost', port = 4455, password = '' } = {}) {
+function scheduleRetry() {
+  if (isRetrying || !lastConnectParams) return
+  isRetrying = true
+  retryTimeout = setTimeout(() => {
+    isRetrying = false
+    attemptConnect(lastConnectParams)
+  }, RETRY_INTERVAL)
+}
+
+async function attemptConnect(params) {
   try {
-    await obs.connect(`ws://${host}:${port}`, password || undefined)
+    await obs.connect(`ws://${params.host}:${params.port}`, params.password || undefined)
     connected = true
     const sceneRes = await obs.call('GetCurrentProgramScene').catch(() => null)
     const currentScene = sceneRes?.currentProgramSceneName ?? null
     connectedCallback?.(currentScene)
     emit({ connected: true })
+    // Clear retry state on successful connection
+    isRetrying = false
+    if (retryTimeout) clearTimeout(retryTimeout)
     return { connected: true }
   } catch (err) {
     emit({ connected: false })
+    // Schedule next retry
+    scheduleRetry()
     throw new Error(`OBS connection failed: ${err.message}`)
   }
+}
+
+export async function connectOBS({ host = 'localhost', port = 4455, password = '' } = {}) {
+  // Save params for auto-retry
+  lastConnectParams = { host, port, password }
+  return attemptConnect(lastConnectParams)
 }
 
 export async function disconnectOBS() {
@@ -55,6 +93,10 @@ export async function disconnectOBS() {
     // Ignore errors during disconnect (object already destroyed, etc)
   }
   connected = false
+  // Stop retry when explicitly disconnecting
+  lastConnectParams = null
+  if (retryTimeout) clearTimeout(retryTimeout)
+  isRetrying = false
   try {
     emit({ connected: false })
   } catch (err) {
