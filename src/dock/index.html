@@ -29,6 +29,7 @@
     }
     .tile:hover  { background: #26262c; border-color: #4a4a5a; }
     .tile.active { background: #1f1030; border-color: #9147ff; box-shadow: 0 0 0 1px #9147ff; }
+    .tile.disconnected { opacity: 0.5; cursor: default; pointer-events: none; }
     #empty-msg {
       position: absolute; inset: 0;
       display: flex; align-items: center; justify-content: center;
@@ -43,6 +44,7 @@
   <script>
     const PAD = 6
     let state = { layout: null, currentScene: null, currentDeviceId: null }
+    let connected = false
 
     function render() {
       const wrap = document.getElementById('canvas-wrap')
@@ -74,7 +76,10 @@
       for (const pos of tiles) {
         const w = pos.w ?? 45, h = pos.h ?? 45
         const el = document.createElement('div')
-        el.className = 'tile' + (pos.deviceId === state.currentDeviceId ? ' active' : '')
+        let className = 'tile'
+        if (pos.deviceId === state.currentDeviceId) className += ' active'
+        if (!connected) className += ' disconnected'
+        el.className = className
         // Map tile edges from layout bounding-box space → px in dock, using right-edge calculation
         // to ensure adjacent tiles share exactly the same pixel edge (prevents sub-pixel gaps)
         const tileLeft   = Math.round(PAD + (pos.x - minX - w/2) / bw * dw)
@@ -104,9 +109,30 @@
     new ResizeObserver(render).observe(document.getElementById('canvas-wrap'))
 
     let ws
+    let fetchRetryTimeout
+
+    function setCached(data) {
+      localStorage.setItem('dockState', JSON.stringify(data))
+    }
+
+    function getCached() {
+      try {
+        return JSON.parse(localStorage.getItem('dockState') || 'null')
+      } catch {
+        return null
+      }
+    }
+
+    function setConnected(status) {
+      if (connected !== status) {
+        connected = status
+        render()
+      }
+    }
+
     function connect() {
       ws = new WebSocket('ws://localhost:1102/dock')
-      ws.onopen = () => {}
+      ws.onopen = () => setConnected(true)
       ws.onmessage = (e) => {
         try {
           const msg = JSON.parse(e.data)
@@ -114,28 +140,46 @@
             state.layout          = msg.layout          ?? state.layout
             state.currentScene    = msg.currentScene    ?? state.currentScene
             state.currentDeviceId = msg.currentDeviceId ?? state.currentDeviceId
+            setCached(state)
             render()
           }
-          if (msg.type === 'layout-changed') { state.layout = msg.layout; render() }
+          if (msg.type === 'layout-changed') { state.layout = msg.layout; setCached(state); render() }
           if (msg.type === 'scene-changed') {
             state.currentScene = msg.sceneName
-            if (msg.layout !== undefined) { state.layout = msg.layout; render() }
+            if (msg.layout !== undefined) { state.layout = msg.layout; setCached(state); render() }
           }
-          if (msg.type === 'device-shown') { state.currentDeviceId = msg.deviceId; updateActive() }
+          if (msg.type === 'device-shown') { state.currentDeviceId = msg.deviceId; setCached(state); updateActive() }
         } catch {}
       }
-      ws.onclose = () => setTimeout(connect, 3000)
+      ws.onclose = () => { setConnected(false); setTimeout(connect, 1000) }
       ws.onerror = () => {}
     }
 
-    fetch('/api/shiny/state').then(r => r.json()).then(data => {
-      state.layout = data.layout
-      state.currentScene = data.currentScene
-      state.currentDeviceId = data.currentDeviceId
-      render()
-    }).catch(() => {})
+    function fetchState() {
+      fetch('/api/shiny/state').then(r => r.json()).then(data => {
+        state.layout = data.layout
+        state.currentScene = data.currentScene
+        state.currentDeviceId = data.currentDeviceId
+        setCached(state)
+        setConnected(true)
+        render()
+      }).catch(() => {
+        fetchRetryTimeout = setTimeout(fetchState, 1000)
+      })
+    }
+
+    // Try to load from cache first
+    const cached = getCached()
+    if (cached) {
+      state.layout = cached.layout
+      state.currentScene = cached.currentScene
+      state.currentDeviceId = cached.currentDeviceId
+    }
+    setConnected(false)
+    render()
 
     connect()
+    fetchState()
   </script>
 </body>
 </html>
