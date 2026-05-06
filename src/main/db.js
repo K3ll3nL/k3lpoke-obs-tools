@@ -3,7 +3,7 @@ import path from 'path'
 import { app } from 'electron'
 
 let dbPath
-let data = { clips: [], channels: [], settings: {}, collections: [], playbackConfig: null, shinyDevices: [], shinyLayouts: [], shinyActiveLayoutId: null }
+let data = { clips: [], channels: [], settings: {}, collections: [], playbackConfig: null, shinyDevices: [], shinyLayouts: [], shinyActiveLayoutId: null, chatTriggers: [], chatBotAccount: null }
 
 // w and h stored as % of canvas width/height (0–100). For a 16:9 canvas, equal w/h % gives 16:9 tiles.
 function computeDefaultPositions(deviceIds) {
@@ -38,6 +38,8 @@ export function initDb() {
   data.shinyDevices        ??= []
   data.shinyLayouts        ??= []
   data.shinyActiveLayoutId ??= null
+  data.chatTriggers        ??= []
+  data.chatBotAccount      ??= null
 
   // Ensure base layout exists with all current devices using %-based positions
   const base = data.shinyLayouts.find(l => l.id === 'base')
@@ -453,4 +455,37 @@ export function resolveDeviceShinyScene(deviceId, currentOBSScene) {
   if (pos?.shinyScene) return pos.shinyScene
   const device = data.shinyDevices.find(d => d.id === deviceId)
   return device?.defaultShinyScene ?? null
+}
+
+// ── Chat Triggers ─────────────────────────────────────────────────────────
+
+export function getChatTriggers() { return [...data.chatTriggers] }
+
+export function createChatTrigger(trigger) {
+  const id = `trig_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+  const now = new Date().toISOString()
+  const t = { id, enabled: true, createdAt: now, ...trigger }
+  data.chatTriggers.push(t)
+  save()
+  return t
+}
+
+export function updateChatTrigger(id, changes) {
+  const t = data.chatTriggers.find(t => t.id === id)
+  if (!t) return null
+  Object.assign(t, changes)
+  save()
+  return { ...t }
+}
+
+export function deleteChatTrigger(id) {
+  data.chatTriggers = data.chatTriggers.filter(t => t.id !== id)
+  save()
+}
+
+export function getChatBotAccount() { return data.chatBotAccount ? { ...data.chatBotAccount } : null }
+
+export function setChatBotAccount(account) {
+  data.chatBotAccount = account
+  save()
 }

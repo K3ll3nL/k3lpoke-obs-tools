@@ -141,5 +141,31 @@ contextBridge.exposeInMainWorld('api', {
     onUpdateAvailable: (cb) => ipcRenderer.on('app:update-available', (_, d) => cb(d)),
     onUpdateReady:     (cb) => ipcRenderer.on('app:update-ready', (_, d) => cb(d)),
     installUpdate:     ()   => invoke('app:installUpdate')
+  },
+
+  // Chat Triggers
+  chatTriggers: {
+    list:        ()                => invoke('chatTriggers:list'),
+    create:      (trigger)         => invoke('chatTriggers:create', trigger),
+    update:      (id, changes)     => invoke('chatTriggers:update', { id, changes }),
+    delete:      (id)              => invoke('chatTriggers:delete', { id }),
+
+    getStatus:   ()                => invoke('chatTriggers:getStatus'),
+    start:       ()                => invoke('chatTriggers:start'),
+    stop:        ()                => invoke('chatTriggers:stop'),
+
+    getScopes:   ()                => invoke('chatTriggers:getScopes'),
+    reauth:      ()                => invoke('chatTriggers:reauth'),
+
+    getBotAccount: ()              => invoke('chatTriggers:getBotAccount'),
+    loginBot:      ()              => invoke('chatTriggers:loginBot'),
+    logoutBot:     ()              => invoke('chatTriggers:logoutBot'),
+
+    testMessage: (text, username)  => invoke('chatTriggers:testMessage', { text, username }),
+
+    onStatus:    (cb) => ipcRenderer.on('chatTriggers:status', (_, d) => cb(d)),
+    onFired:     (cb) => ipcRenderer.on('chatTriggers:fired',  (_, d) => cb(d)),
+    onLog:       (cb) => ipcRenderer.on('chatTriggers:log',    (_, d) => cb(d)),
+    onMessage:   (cb) => ipcRenderer.on('chatTriggers:message',(_, d) => cb(d)),
   }
 })

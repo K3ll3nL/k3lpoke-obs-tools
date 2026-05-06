@@ -80,11 +80,12 @@ app.get('/auth/callback', (req, res) => {
   <h2 id="msg" style="color:#9146FF">Connecting to Twitch...</h2>
   <p style="color:#adadb8">You can close this window.</p>
   <script>
-    const params = new URLSearchParams(location.hash.slice(1));
-    const token = params.get('access_token');
+    const hashParams = new URLSearchParams(location.hash.slice(1));
+    const token = hashParams.get('access_token');
+    const state = hashParams.get('state') || 'main';
     if (token) {
-      fetch('/auth/token?access_token=' + encodeURIComponent(token))
-        .then(() => { document.getElementById('msg').textContent = 'Connected! You can close this window.' })
+      fetch('/auth/token?access_token=' + encodeURIComponent(token) + '&state=' + encodeURIComponent(state))
+        .then(() => { document.getElementById('msg').textContent = state === 'bot' ? 'Bot account connected! You can close this window.' : 'Connected! You can close this window.' })
         .catch(() => { document.getElementById('msg').textContent = 'Error — please try again.' })
     } else {
       document.getElementById('msg').textContent = 'No token received — please try again.'
@@ -96,8 +97,9 @@ app.get('/auth/callback', (req, res) => {
 
 app.get('/auth/token', (req, res) => {
   const token = req.query.access_token
+  const state = req.query.state ?? 'main'
   res.json({ ok: !!token })
-  if (token) receiveAuthToken(token)
+  if (token) receiveAuthToken(token, state)
 })
 
 // ── WebSocket broadcasting ──────────────────────────────────────────────────

@@ -14,6 +14,10 @@ import Collections from './pages/Collections'
 import Settings from './pages/Settings'
 import Marketplace from './pages/Marketplace'
 import ClipSettings from './pages/ClipSettings'
+import ChatTriggerSetup from './pages/ChatTriggerSetup'
+import ChatTriggerList from './pages/ChatTriggerList'
+import ChatTriggerEditor from './pages/ChatTriggerEditor'
+import ChatTriggerSettings from './pages/ChatTriggerSettings'
 
 export default function App() {
   const [twitchUser, setTwitchUser] = useState(null)
@@ -50,7 +54,7 @@ export default function App() {
   }
 
   const isSetup = !!twitchUser
-  const hidePanel = ['/settings', '/setup', '/marketplace'].includes(pathname) || pathname.startsWith('/shiny')
+  const hidePanel = ['/settings', '/setup', '/marketplace'].includes(pathname) || pathname.startsWith('/shiny') || pathname.startsWith('/chat-triggers')
 
   return (
     <div className="flex h-screen bg-twitch-dark overflow-hidden">
@@ -86,6 +90,11 @@ export default function App() {
               ? <Marketplace subscribedIds={subscribedIds} onSubscriptionChange={setSubscribedIds} />
               : <Navigate to="/setup" />
           } />
+          <Route path="/chat-triggers/setup"    element={<ChatTriggerSetup twitchUser={twitchUser} />} />
+          <Route path="/chat-triggers/new"      element={isSetup ? <ChatTriggerEditor /> : <Navigate to="/setup" />} />
+          <Route path="/chat-triggers/edit/:id" element={isSetup ? <ChatTriggerEditor /> : <Navigate to="/setup" />} />
+          <Route path="/chat-triggers/settings" element={isSetup ? <ChatTriggerSettings /> : <Navigate to="/setup" />} />
+          <Route path="/chat-triggers"          element={isSetup ? <ChatTriggerList /> : <Navigate to="/setup" />} />
           <Route path="/shiny/setup"   element={<ShinySetup obsConnected={obsConnected} />} />
           <Route path="/shiny/devices" element={isSetup ? <ShinyDevices /> : <Navigate to="/setup" />} />
           <Route path="/shiny/layouts" element={isSetup ? <ShinyLayouts /> : <Navigate to="/setup" />} />
