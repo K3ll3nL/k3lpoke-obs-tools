@@ -263,10 +263,14 @@ function DatapillEditor({ mode, value, onChange, availableDatepills, patternVars
     setPillMenuPos({ top: rect.bottom + 5, left: rect.left })
   }
 
-  const updateSelectedPill = (newContent) => {
+  const updatePillContent = (newContent) => {
     if (!selectedPillId) return
     const newValue = value.replace(`@{${selectedPillId}}`, `@{${newContent}}`)
     updateValue(newValue)
+    setSelectedPillId(newContent)
+  }
+
+  const closePillMenu = () => {
     setSelectedPillId(null)
     setPillMenuPos(null)
   }
@@ -274,6 +278,18 @@ function DatapillEditor({ mode, value, onChange, availableDatepills, patternVars
   useEffect(() => {
     syncDOMFromValue()
   }, [value])
+
+  useEffect(() => {
+    const handleClickAway = (e) => {
+      if (selectedPillId && pillMenuPos && !e.target.closest('[data-pill-menu]')) {
+        closePillMenu()
+      }
+    }
+    if (selectedPillId) {
+      document.addEventListener('click', handleClickAway)
+      return () => document.removeEventListener('click', handleClickAway)
+    }
+  }, [selectedPillId])
 
   const getPillLabel = (content) => {
     const parts = content.split('|')
@@ -322,11 +338,19 @@ function DatapillEditor({ mode, value, onChange, availableDatepills, patternVars
           setDeleteMode(pillContent)
           pill.classList.add('bg-red-900/40', 'border-red-700/60', 'text-red-400')
         }
+      } else if (offset === 0 && node === editorRef.current) {
+        // At beginning of editor with nothing to delete - prevent default
+        e.preventDefault()
+        if (deleteMode) {
+          setDeleteMode(null)
+          editorRef.current?.querySelectorAll('.datapill.bg-red-900\\/40')?.forEach(p => {
+            p.classList.remove('bg-red-900/40', 'border-red-700/60', 'text-red-400')
+          })
+        }
       } else {
         // Clear delete mode if not near a pill
         if (deleteMode) {
           setDeleteMode(null)
-          // Clear any remaining highlights
           editorRef.current?.querySelectorAll('.datapill.bg-red-900\\/40')?.forEach(p => {
             p.classList.remove('bg-red-900/40', 'border-red-700/60', 'text-red-400')
           })
@@ -365,14 +389,14 @@ function DatapillEditor({ mode, value, onChange, availableDatepills, patternVars
     const type = parts[0]
 
     return (
-      <div className="fixed bg-twitch-dark border border-twitch-border rounded shadow-lg z-50 min-w-48 p-2 space-y-2" style={{ top: `${pillMenuPos.top}px`, left: `${pillMenuPos.left}px` }}>
+      <div data-pill-menu className="fixed bg-twitch-dark border border-twitch-border rounded shadow-lg z-50 min-w-48 p-2 space-y-2" style={{ top: `${pillMenuPos.top}px`, left: `${pillMenuPos.left}px` }}>
         {type === 'choice' && (
           <>
             <div className="space-y-1">
               <label className="text-xs text-twitch-muted block">Options:</label>
               <textarea
                 value={parts.slice(2).join('\n')}
-                onChange={e => updateSelectedPill(`choice|${parts[1]}|${e.target.value.split('\n').join('|')}`)}
+                onChange={e => updatePillContent(`choice|${parts[1]}|${e.target.value.split('\n').join('|')}`)}
                 rows={2}
                 className="w-full text-xs bg-twitch-surface border border-twitch-border rounded px-2 py-1 text-twitch-text resize-none"
               />
@@ -382,7 +406,7 @@ function DatapillEditor({ mode, value, onChange, availableDatepills, patternVars
                 <label className="text-xs text-twitch-muted block mb-1">Name:</label>
                 <input
                   value={parts[1] || ''}
-                  onChange={e => updateSelectedPill(`choice|${e.target.value}|${parts.slice(2).join('|')}`)}
+                  onChange={e => updatePillContent(`choice|${e.target.value}|${parts.slice(2).join('|')}`)}
                   placeholder="e.g. location"
                   className="w-full text-xs bg-twitch-surface border border-twitch-border rounded px-2 py-1 text-twitch-text"
                 />
@@ -397,7 +421,7 @@ function DatapillEditor({ mode, value, onChange, availableDatepills, patternVars
               <label className="text-xs text-twitch-muted block">Capture type:</label>
               <select
                 value={parts[1]}
-                onChange={e => updateSelectedPill(`capture|${e.target.value}|${parts[2] || ''}`)}
+                onChange={e => updatePillContent(`capture|${e.target.value}|${parts[2] || ''}`)}
                 className="w-full text-xs bg-twitch-surface border border-twitch-border rounded px-2 py-1 text-twitch-text"
               >
                 <option value="text">Text (word)</option>
@@ -410,7 +434,7 @@ function DatapillEditor({ mode, value, onChange, availableDatepills, patternVars
                 <label className="text-xs text-twitch-muted block mb-1">Name:</label>
                 <input
                   value={parts[2] || ''}
-                  onChange={e => updateSelectedPill(`capture|${parts[1]}|${e.target.value}`)}
+                  onChange={e => updatePillContent(`capture|${parts[1]}|${e.target.value}`)}
                   placeholder="e.g. days_ago"
                   className="w-full text-xs bg-twitch-surface border border-twitch-border rounded px-2 py-1 text-twitch-text"
                 />
@@ -420,7 +444,7 @@ function DatapillEditor({ mode, value, onChange, availableDatepills, patternVars
         )}
 
         <button
-          onClick={() => setSelectedPillId(null)}
+          onClick={closePillMenu}
           className="w-full text-xs px-2 py-1 rounded border border-twitch-border text-twitch-muted hover:text-twitch-text text-center"
         >
           Done
@@ -442,7 +466,7 @@ function DatapillEditor({ mode, value, onChange, availableDatepills, patternVars
           className="p-3 bg-twitch-dark border border-twitch-border rounded-lg min-h-12 cursor-text focus:outline-none focus:ring-1 focus:ring-teal-600 text-twitch-text break-words"
         />
         {!value && (
-          <div className="absolute top-3 left-1/2 -translate-x-1/2 pointer-events-none text-twitch-muted text-xs select-none">Build here...</div>
+          <div className="absolute top-1/2 left-3 -translate-y-1/2 pointer-events-none text-twitch-muted text-xs select-none">Build here...</div>
         )}
       </div>
       {getPillMenuContent()}
@@ -567,21 +591,22 @@ function DatapillComponent({ mode, content, onUpdate, onDelete, isInDeleteMode, 
 
 // ── ResponseEditor (uses DatapillEditor) ────────────────────────────────────
 
-function ResponseEditor({ template, onUpdate, patternVars, triggerPattern, isAnnouncement }) {
+function ResponseEditor({ template, onUpdate, triggerPattern, isAnnouncement }) {
   const [showAdvanced, setShowAdvanced] = useState(false)
 
   // Extract pattern datapill names from pattern
-  const patternDatpillNames = {}
+  const patternVariables = []
   if (triggerPattern) {
     const datapills = triggerPattern.match(/@\{[^}]+\}/g) || []
     datapills.forEach((pill) => {
       const content = pill.slice(2, -1)
       const parts = content.split('|')
       if (parts[0] === 'choice' && parts[1]) {
-        patternDatpillNames[parts[1]] = 'choice'
+        patternVariables.push({ name: parts[1], label: `${parts[1]} (choice)` })
       }
       if (parts[0] === 'capture' && parts[2]) {
-        patternDatpillNames[parts[2]] = 'capture'
+        const icon = parts[1] === 'number' ? '🔢' : parts[1] === 'wildcard' ? '❋' : '📝'
+        patternVariables.push({ name: parts[2], label: `${icon} ${parts[2]}` })
       }
     })
   }
@@ -599,7 +624,7 @@ function ResponseEditor({ template, onUpdate, patternVars, triggerPattern, isAnn
 
   const insertVar = (varName) => {
     const current = template || ''
-    onUpdate(current + (current ? ' ' : '') + `@{${varName}}`)
+    onUpdate(current + `@{${varName}}`)
   }
 
   return (
@@ -612,6 +637,15 @@ function ResponseEditor({ template, onUpdate, patternVars, triggerPattern, isAnn
               {v.label}
             </button>
           ))}
+          {patternVariables.length > 0 && (
+            <>
+              {patternVariables.map(v => (
+                <button key={v.name} onClick={() => insertVar(v.name)} className="text-xs px-2 py-1 rounded border border-purple-700/60 bg-purple-900/20 text-purple-400 hover:bg-purple-900/40">
+                  {v.label}
+                </button>
+              ))}
+            </>
+          )}
           {!showAdvanced && (
             <button onClick={() => setShowAdvanced(true)} className="text-xs px-2 py-1 rounded border border-twitch-border text-twitch-muted hover:text-twitch-text">
               More...
@@ -629,7 +663,7 @@ function ResponseEditor({ template, onUpdate, patternVars, triggerPattern, isAnn
         )}
       </div>
 
-      <DatapillEditor mode="response" value={template} onChange={onUpdate} patternDatpillNames={patternDatpillNames} />
+      <DatapillEditor mode="response" value={template} onChange={onUpdate} />
     </div>
   )
 }
@@ -645,7 +679,7 @@ function PatternEditor({ pattern, onUpdate }) {
       capture_wildcard: 'capture|wildcard|',
     }
     const current = pattern || ''
-    onUpdate(current + (current ? ' ' : '') + `@{${additions[type]}}`)
+    onUpdate(current + `@{${additions[type]}}`)
   }
 
   return (
