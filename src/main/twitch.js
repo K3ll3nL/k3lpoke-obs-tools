@@ -1,12 +1,12 @@
 import axios from 'axios'
 import { shell } from 'electron'
-import { getSetting, setSetting } from './db.js'
+import { getSetting, setSetting, setChatBotAccount } from './db.js'
 
 const TWITCH_AUTH_URL = 'https://id.twitch.tv/oauth2/authorize'
 const TWITCH_API = 'https://api.twitch.tv/helix'
 const TWITCH_GQL = 'https://gql.twitch.tv/gql'
 const REDIRECT_URI = 'http://localhost:1102/auth/callback'
-const SCOPES = 'user:read:email'
+const SCOPES = 'user:read:email chat:read user:write:chat moderator:manage:announcements moderator:read:followers'
 const DEFAULT_CLIENT_ID = '0ue4vlu07adeae3lxj3e7euyuhvmyx'
 // Twitch's internal GQL client ID — required for playback token endpoint
 const GQL_CLIENT_ID = 'kimne78kx3ncx6brgo4mv6wki5h1ko'
@@ -32,8 +32,19 @@ export function setClientId(id) {
 
 let _pendingAuthResolve = null
 let _pendingAuthReject = null
+let _pendingBotResolve = null
+let _pendingBotReject = null
 
-export function receiveAuthToken(token) {
+export function receiveAuthToken(token, state = 'main') {
+  if (state === 'bot') {
+    if (!_pendingBotResolve) return
+    const resolve = _pendingBotResolve
+    const reject = _pendingBotReject
+    _pendingBotResolve = null
+    _pendingBotReject = null
+    storeBotToken(token).then(resolve).catch(reject)
+    return
+  }
   if (!_pendingAuthResolve) return
   const resolve = _pendingAuthResolve
   const reject = _pendingAuthReject
@@ -209,6 +220,90 @@ function normalizeClip(c, gameNames = {}) {
 function thumbnailToVideoUrl(thumbnailUrl) {
   if (!thumbnailUrl) return null
   return thumbnailUrl.replace(/-preview-\d+x\d+\.jpg$/, '.mp4')
+}
+
+// ── Chat ──────────────────────────────────────────────────────────────────
+
+export async function validateTokenScopes() {
+  if (!accessToken) return []
+  try {
+    const res = await axios.get('https://id.twitch.tv/oauth2/validate', {
+      headers: { Authorization: `OAuth ${accessToken}` }
+    })
+    return res.data.scopes ?? []
+  } catch { return [] }
+}
+
+const BOT_SCOPES = 'chat:read user:write:chat'
+
+export async function startBotOAuthFlow() {
+  if (!clientId) throw new Error('No Client ID configured')
+  const url =
+    `${TWITCH_AUTH_URL}?client_id=${clientId}` +
+    `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}` +
+    `&response_type=token` +
+    `&scope=${encodeURIComponent(BOT_SCOPES)}` +
+    `&state=bot` +
+    `&force_verify=true`
+
+  return new Promise((resolve, reject) => {
+    _pendingBotResolve = resolve
+    const timer = setTimeout(() => {
+      _pendingBotResolve = null
+      _pendingBotReject = null
+      reject(new Error('Bot auth timed out'))
+    }, 5 * 60 * 1000)
+    _pendingBotReject = (err) => { clearTimeout(timer); reject(err) }
+    shell.openExternal(url)
+  })
+}
+
+async function storeBotToken(token) {
+  const res = await axios.get(`${TWITCH_API}/users`, {
+    headers: { 'Client-Id': clientId, Authorization: `Bearer ${token}` }
+  })
+  const user = res.data.data[0] ?? null
+  const botAccount = { token, user }
+  setChatBotAccount(botAccount)
+  return botAccount
+}
+
+export function logoutBot() {
+  setChatBotAccount(null)
+}
+
+export async function sendChatMessage(broadcasterId, senderId, text, senderToken) {
+  await axios.post(`${TWITCH_API}/chat/messages`, {
+    broadcaster_id: broadcasterId,
+    sender_id: senderId,
+    message: text.slice(0, 500)
+  }, {
+    headers: { 'Client-Id': clientId, Authorization: `Bearer ${senderToken ?? accessToken}` }
+  })
+}
+
+export async function sendAnnouncement(broadcasterId, moderatorId, text, color = 'primary', token) {
+  await axios.post(
+    `${TWITCH_API}/chat/announcements?broadcaster_id=${broadcasterId}&moderator_id=${moderatorId}`,
+    { message: text.slice(0, 500), color },
+    { headers: { 'Client-Id': clientId, Authorization: `Bearer ${token ?? accessToken}` } }
+  )
+}
+
+export async function fetchFollowage(userId, broadcasterId) {
+  try {
+    const res = await apiGet('/channels/followers', { broadcaster_id: broadcasterId, user_id: userId })
+    const follow = res.data?.[0]
+    if (!follow) return null
+    const ms = Date.now() - new Date(follow.followed_at).getTime()
+    const days = Math.floor(ms / 86400000)
+    const years = Math.floor(days / 365)
+    const months = Math.floor(days / 30)
+    if (years > 0) return `${years} year${years > 1 ? 's' : ''}`
+    if (months > 0) return `${months} month${months > 1 ? 's' : ''}`
+    if (days > 0) return `${days} day${days > 1 ? 's' : ''}`
+    return 'less than a day'
+  } catch { return null }
 }
 
 export async function getClipVideoUrl(clipId) {

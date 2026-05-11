@@ -44,7 +44,6 @@ export default function Nav({ obsConnected, twitchUser, subscribedIds }) {
           }}
         >
 
-
           {/* pull currentApp.image if it exists, otherwise show a default icon */}
           {currentApp?.image ? (
             currentApp.image()

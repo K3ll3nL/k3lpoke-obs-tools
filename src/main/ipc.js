@@ -1,10 +1,12 @@
-import { ipcMain, app } from 'electron'
+import { ipcMain, app, dialog } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import {
   initTwitch, getTwitchState, setClientId, startOAuthFlow, logout,
-  fetchUserByLogin, fetchClips, getClipVideoUrl, checkClipsExist, searchChannels as searchTwitchChannels
+  fetchUserByLogin, fetchClips, getClipVideoUrl, checkClipsExist, searchChannels as searchTwitchChannels,
+  validateTokenScopes, startBotOAuthFlow, logoutBot as logoutBotAccount,
+  sendChatMessage, sendAnnouncement, fetchFollowage as fetchFollowageApi
 } from './twitch.js'
-import { connectOBS, disconnectOBS, isConnected, getSceneList, addBrowserSource, switchScene, getSourceList, getSceneItemList, showDeviceInScene } from './obs.js'
+import { connectOBS, disconnectOBS, isConnected, getSceneList, addBrowserSource, switchScene, getSourceList, getSceneItemList, showDeviceInScene, setSourceVisibility, getCurrentScene, checkChatTriggersPlayer } from './obs.js'
 import {
   getClipsByStatus, getAllClips, getNewClips, setClipStatus, bulkSetStatus, removeClip, reorderQueue,
   upsertClip, clipExists, getChannels, upsertChannel, removeChannel,
@@ -16,8 +18,14 @@ import {
   getShinyLayouts, createShinyLayout, updateShinyLayout,
   setShinyLayoutPosition, replaceShinyLayoutPositions, removeDeviceFromShinyLayout, removeShinyLayout,
   setActiveShinyLayout, getActiveShinyLayout, getShinyLayoutForScene,
-  setShinyLayoutPositionScene, resolveDeviceShinyScene
+  setShinyLayoutPositionScene, resolveDeviceShinyScene,
+  getChatTriggers, createChatTrigger, updateChatTrigger, deleteChatTrigger,
+  getChatBotAccount
 } from './db.js'
+import {
+  startChatEngine, stopChatEngine, getChatEngineStatus, setEngineWindow,
+  runTriggers, matchTrigger, onChatMessage
+} from './chatEngine.js'
 import {
   playClip, stopPlayer, getPlayerState, getNextClipState, broadcastSkipNext,
   getOverlayUrl, sendOverlayConfig, notifyQueueUpdated, broadcastVolumeChange,
@@ -81,7 +89,7 @@ function handle(channel, fn) {
   })
 }
 
-export function registerIpcHandlers(mainWindow) {
+export async function registerIpcHandlers(mainWindow) {
   setMainWindow(mainWindow)
   // ── Twitch ────────────────────────────────────────────────────────────────
   handle('twitch:getState', () => {
@@ -242,9 +250,26 @@ export function registerIpcHandlers(mainWindow) {
   handle('obs:getStatus', () => ({ connected: isConnected() }))
   handle('obs:getScenes', () => getSceneList())
 
-  handle('obs:addBrowserSource', async ({ sceneName }) => {
-    const url = getOverlayUrl()
-    return addBrowserSource({ sceneName, url })
+  handle('obs:addBrowserSource', async ({ sceneName, url, inputName } = {}) => {
+    const finalUrl = url ?? getOverlayUrl()
+    return addBrowserSource({ sceneName, url: finalUrl, inputName: inputName ?? 'Twitch Clip Queue' })
+  })
+
+  handle('obs:checkChatTriggersPlayer', async (sceneName) => {
+    return checkChatTriggersPlayer(sceneName)
+  })
+
+  handle('obs:setSourceVisibility', async ({ sceneName, sourceName, visible }) => {
+    return setSourceVisibility({ sceneName, sourceName, visible })
+  })
+
+  // ── App utilities ─────────────────────────────────────────────────────────
+  handle('app:openFile', async ({ filters } = {}) => {
+    const r = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openFile'],
+      filters: filters ?? []
+    })
+    return r.canceled ? null : r.filePaths[0]
   })
 
   // ── Player ────────────────────────────────────────────────────────────────
@@ -365,6 +390,99 @@ export function registerIpcHandlers(mainWindow) {
   handle('shiny:layouts:getActive',        ()                          => getActiveShinyLayout())
   handle('shiny:layouts:getForScene',      ({ sceneName })             => getShinyLayoutForScene(sceneName))
   handle('shiny:layouts:setPositionScene', ({ id, deviceId, shinyScene }) => { const r = setShinyLayoutPositionScene(id, deviceId, shinyScene); notifyShinyLayoutChanged(); return r })
+
+  // ── Chat Triggers ─────────────────────────────────────────────────────────
+
+  setEngineWindow(mainWindow)
+
+  // Wire up incoming chat messages → trigger runner
+  onChatMessage(async (msg) => {
+    const state = getTwitchState()
+    const triggers = getChatTriggers().filter(t => t.enabled)
+    const bot = getChatBotAccount()
+    const sceneBlacklist = getSetting('sceneBlacklist') ?? {}
+    await runTriggers(msg, triggers, {
+      sendChatMessage,
+      sendAnnouncement,
+      fetchFollowage: fetchFollowageApi,
+      fetchUserByLogin,
+      mainUser: state.user,
+      botAccount: bot,
+      obsGetSceneItemList: getSceneItemList,
+      obsSetSourceVisibility: setSourceVisibility,
+      getCurrentScene,
+      globalSceneBlacklist: sceneBlacklist,
+    })
+  })
+
+  handle('chatTriggers:list', () => getChatTriggers())
+  handle('chatTriggers:create', (trigger) => createChatTrigger(trigger))
+  handle('chatTriggers:update', ({ id, changes }) => updateChatTrigger(id, changes))
+  handle('chatTriggers:delete', ({ id }) => deleteChatTrigger(id))
+
+  handle('chatTriggers:getStatus', () => getChatEngineStatus())
+
+  handle('chatTriggers:start', () => {
+    const state = getTwitchState()
+    if (!state.user || !state.accessToken) throw new Error('Not authenticated with Twitch')
+    startChatEngine(state.user.login, state.accessToken, state.user.login)
+    return getChatEngineStatus()
+  })
+
+  handle('chatTriggers:stop', () => {
+    stopChatEngine()
+    return getChatEngineStatus()
+  })
+
+  handle('chatTriggers:getScopes', () => validateTokenScopes())
+
+  handle('chatTriggers:reauth', async () => {
+    const user = await startOAuthFlow()
+    if (user) {
+      upsertChannel({ name: user.login, display_name: user.display_name, broadcaster_id: user.id, is_own: 1 })
+      mainWindow.webContents.send('twitch:auth-changed', { user })
+    }
+    return user
+  })
+
+  handle('chatTriggers:getBotAccount', () => {
+    const bot = getChatBotAccount()
+    return bot ? { login: bot.user?.login, displayName: bot.user?.display_name, avatar: bot.user?.profile_image_url } : null
+  })
+
+  handle('chatTriggers:loginBot', async () => {
+    const bot = await startBotOAuthFlow()
+    return { login: bot.user?.login, displayName: bot.user?.display_name, avatar: bot.user?.profile_image_url }
+  })
+
+  handle('chatTriggers:logoutBot', async () => {
+    await logoutBotAccount()
+    return null
+  })
+
+  handle('chatTriggers:testMessage', ({ text, username }) => {
+    const triggers = getChatTriggers()
+    const fakeMsg = {
+      username: username?.toLowerCase() ?? 'testuser',
+      displayName: username ?? 'testuser',
+      userId: '0',
+      text,
+      badges: {},
+      isMod: false,
+      isSubscriber: false,
+      isVip: false,
+      isBroadcaster: false,
+    }
+    return triggers.map(t => ({ id: t.id, name: t.name, matches: !!matchTrigger(t, fakeMsg) }))
+  })
+
+  // Auto-start engine if it was previously running
+  if (getSetting('chatEngineAutoStart')) {
+    const state = getTwitchState()
+    if (state.user && state.accessToken) {
+      startChatEngine(state.user.login, state.accessToken, state.user.login)
+    }
+  }
 
   // ── Updates ────────────────────────────────────────────────────────────────
 

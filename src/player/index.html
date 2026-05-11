@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chat Triggers Video Player</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      width: 100vw;
+      height: 100vh;
+      background: transparent;
+      overflow: hidden;
+      font-family: Inter, 'Segoe UI', sans-serif;
+    }
+    video {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      background: transparent;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+    }
+    video.playing { opacity: 1; }
+  </style>
+</head>
+<body>
+  <video id="player"></video>
+
+  <script>
+    const video = document.getElementById('player');
+    let ws = null;
+
+    function connectWS() {
+      ws = new WebSocket(`ws://${window.location.host}`);
+      ws.onmessage = (e) => {
+        try {
+          const msg = JSON.parse(e.data);
+          if (msg.type === 'play-video') {
+            playVideo(msg.url);
+          } else if (msg.type === 'stop') {
+            stopVideo();
+          }
+        } catch (err) {
+          console.error('WS message error:', err);
+        }
+      };
+      ws.onerror = () => setTimeout(connectWS, 2000);
+      ws.onclose = () => setTimeout(connectWS, 2000);
+    }
+
+    function playVideo(url) {
+      video.src = url;
+      video.classList.add('playing');
+      video.play().catch(err => console.error('Playback error:', err));
+    }
+
+    function stopVideo() {
+      video.pause();
+      video.src = '';
+      video.classList.remove('playing');
+    }
+
+    // Check if we have URL params for direct playback (for testing)
+    const params = new URLSearchParams(window.location.search);
+    if (params.has('url')) {
+      playVideo(decodeURIComponent(params.get('url')));
+    }
+
+    connectWS();
+  </script>
+</body>
+</html>

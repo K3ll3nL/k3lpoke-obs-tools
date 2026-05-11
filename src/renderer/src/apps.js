@@ -1,5 +1,5 @@
 import React from 'react'
-import { Bell, ClipboardCheck, Settings, Layers, Monitor, LayoutGrid } from 'lucide-react'
+import { Bell, ClipboardCheck, Settings, Layers, Monitor, LayoutGrid, MessageSquare, Plus, Zap } from 'lucide-react'
 
 /**
  * Central registry of all K3LPoke apps.
@@ -70,6 +70,27 @@ export const APP_REGISTRY = [
       React.createElement('path', { key: 'stand', d: 'M 8 17 L 8 21 M 16 17 L 16 21 M 7 21 L 17 21' }),
       React.createElement('path', { key: 'sparkle1', d: 'M 16 8 L 17 9 L 16 10 L 15 9 Z', fill: 'white' }),
       React.createElement('path', { key: 'sparkle2', d: 'M 14 6 L 14.5 7 L 14 8 L 13.5 7 Z', fill: 'white' }),
+    ])
+  },
+  {
+    id: 'chat-triggers',
+    name: 'Chat Triggers',
+    tagline: 'Automate responses to chat messages',
+    description:
+      'Build smart chat automations with a visual no-code editor. Match keywords, run !commands with parameters, send messages or announcements, and manage cooldowns — without writing a line of regex.',
+    color: '#00b5ad',
+    gradient: 'from-teal-500 to-cyan-700',
+    defaultRoute: '/chat-triggers',
+    routePrefix: '/chat-triggers',
+    core: false,
+    version: '0.1.0',
+    navItems: [
+      { to: '/chat-triggers',          icon: Zap,      label: 'Triggers', end: true },
+      { to: '/chat-triggers/settings', icon: Settings, label: 'Settings'              },
+    ],
+    image: () => React.createElement('svg', { width: '20', height: '20', viewBox: '0 0 24 24', fill: 'none', stroke: 'white', strokeWidth: '2', strokeLinecap: 'round', strokeLinejoin: 'round' }, [
+      React.createElement('path', { key: 'bubble', d: 'M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z' }),
+      React.createElement('path', { key: 'bolt', d: 'M13 8l-2 4h3l-2 4', stroke: '#00b5ad' }),
     ])
   },
   {

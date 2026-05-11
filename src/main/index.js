@@ -67,7 +67,7 @@ app.whenReady().then(async () => {
     await startServer().catch((err) => console.error('Server failed to start:', err))
 
     const win = await createWindow()
-    registerIpcHandlers(win)
+    await registerIpcHandlers(win)
 
     // Setup auto-updater (only in packaged builds)
     if (!isDev) {

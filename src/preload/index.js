@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+const { contextBridge, ipcRenderer } = require('electron')
 
 function invoke(channel, data) {
   return ipcRenderer.invoke(channel, data)
@@ -52,7 +52,9 @@ contextBridge.exposeInMainWorld('api', {
     disconnect: () => invoke('obs:disconnect'),
     getStatus: () => invoke('obs:getStatus'),
     getScenes: () => invoke('obs:getScenes'),
-    addBrowserSource: (sceneName) => invoke('obs:addBrowserSource', { sceneName }),
+    addBrowserSource: (opts) => invoke('obs:addBrowserSource', opts),
+    checkChatTriggersPlayer: (sceneName) => invoke('obs:checkChatTriggersPlayer', sceneName),
+    setSourceVisibility: (opts) => invoke('obs:setSourceVisibility', opts),
     onStatusChanged:  (cb) => ipcRenderer.on('obs:status-changed',  (_, d) => cb(d)),
     onSceneChanged:   (cb) => ipcRenderer.on('obs:scene-changed',   (_, d) => cb(d))
   },
@@ -137,9 +139,37 @@ contextBridge.exposeInMainWorld('api', {
 
   // App updates
   app: {
-    getUpdateState:    ()   => invoke('app:getUpdateState'),
-    onUpdateAvailable: (cb) => ipcRenderer.on('app:update-available', (_, d) => cb(d)),
-    onUpdateReady:     (cb) => ipcRenderer.on('app:update-ready', (_, d) => cb(d)),
-    installUpdate:     ()   => invoke('app:installUpdate')
+    getUpdateState:    ()        => invoke('app:getUpdateState'),
+    onUpdateAvailable: (cb)      => ipcRenderer.on('app:update-available', (_, d) => cb(d)),
+    onUpdateReady:     (cb)      => ipcRenderer.on('app:update-ready', (_, d) => cb(d)),
+    installUpdate:     ()        => invoke('app:installUpdate'),
+    openFile:          (filters) => invoke('app:openFile', { filters }),
+  },
+
+  // Chat Triggers
+  chatTriggers: {
+    list:        ()                => invoke('chatTriggers:list'),
+    create:      (trigger)         => invoke('chatTriggers:create', trigger),
+    update:      (id, changes)     => invoke('chatTriggers:update', { id, changes }),
+    delete:      (id)              => invoke('chatTriggers:delete', { id }),
+
+    getStatus:   ()                => invoke('chatTriggers:getStatus'),
+    start:       ()                => invoke('chatTriggers:start'),
+    stop:        ()                => invoke('chatTriggers:stop'),
+
+    getScopes:   ()                => invoke('chatTriggers:getScopes'),
+    reauth:      ()                => invoke('chatTriggers:reauth'),
+
+    getBotAccount: ()              => invoke('chatTriggers:getBotAccount'),
+    loginBot:      ()              => invoke('chatTriggers:loginBot'),
+    logoutBot:     ()              => invoke('chatTriggers:logoutBot'),
+
+    testMessage: (text, username)  => invoke('chatTriggers:testMessage', { text, username }),
+
+    onStatus:    (cb) => ipcRenderer.on('chatTriggers:status',    (_, d) => cb(d)),
+    onFired:     (cb) => ipcRenderer.on('chatTriggers:fired',     (_, d) => cb(d)),
+    onLog:       (cb) => ipcRenderer.on('chatTriggers:log',       (_, d) => cb(d)),
+    onMessage:   (cb) => ipcRenderer.on('chatTriggers:message',   (_, d) => cb(d)),
+    onPlayMedia: (cb) => ipcRenderer.on('chatTriggers:playMedia', (_, d) => cb(d)),
   }
 })
