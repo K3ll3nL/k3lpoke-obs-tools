@@ -6,6 +6,7 @@ import CollectionPicker from '../components/CollectionPicker'
 import ControlToggleButtons from '../components/ControlToggleButtons'
 import VolumeSlider from '../components/VolumeSlider'
 import { showUndo } from '../lib/undoToast'
+import { generateThumbFromVideo } from '../lib/generateThumb'
 
 function duration(secs) {
   const m = Math.floor(secs / 60)
@@ -15,6 +16,7 @@ function duration(secs) {
 
 const ClipRow = React.memo(function ClipRow({ clip, onStatusChange, collections, selected, onToggleSelect, clipIndex, selectionActive }) {
   const [expanded, setExpanded] = useState(false)
+  const [videoThumb, setVideoThumb] = useState(null)
   const [videoUrl, setVideoUrl] = useState(null)
   const [loadingUrl, setLoadingUrl] = useState(false)
   const [urlError, setUrlError] = useState(null)
@@ -48,8 +50,20 @@ const ClipRow = React.memo(function ClipRow({ clip, onStatusChange, collections,
     return () => {
       vid.removeEventListener('loadedmetadata', onMeta)
       vid.removeEventListener('timeupdate', onTick)
+      vid.pause()
+      vid.currentTime = 0
     }
   }, [videoUrl, trimStart, trimEnd])
+
+  useEffect(() => {
+    if (!expanded) {
+      const vid = videoRef.current
+      if (vid) {
+        vid.pause()
+        vid.currentTime = 0
+      }
+    }
+  }, [expanded])
 
   async function handleExpand() {
     const open = !expanded
@@ -96,10 +110,24 @@ const ClipRow = React.memo(function ClipRow({ clip, onStatusChange, collections,
 
         {/* Expand area */}
         <button className="flex-1 min-w-0 text-left flex gap-3 p-3 hover:bg-white/5 transition-colors" onClick={handleExpand}>
-          <div className="relative shrink-0 w-32 h-[72px] rounded overflow-hidden bg-black">
-            {clip.thumbnail_url
-              ? <img src={clip.thumbnail_url} alt="" className="w-full h-full object-cover" />
-              : <div className="w-full h-full bg-twitch-mid" />}
+          <div className="relative shrink-0 w-32 h-[72px] rounded overflow-hidden bg-twitch-mid">
+            {(videoThumb || clip.thumbnail_url) && (
+              <img src={videoThumb || clip.thumbnail_url} alt="" className="absolute inset-0 w-full h-full object-cover"
+                onLoad={async e => {
+                  const i = e.currentTarget
+                  if (i.naturalWidth / i.naturalHeight < 1.6) {
+                    i.remove()
+                    try {
+                      const r = await window.api.clips.getVideoUrl(clip.id)
+                      if (!r.ok) return
+                      const url = await generateThumbFromVideo(r.data)
+                      setVideoThumb(url)
+                      window.api.clips.saveThumbnail(clip.id, url)
+                    } catch {}
+                  }
+                }}
+                onError={e => e.currentTarget.remove()} />
+            )}
             <span className="absolute bottom-1 right-1 bg-black/70 text-white text-[10px] px-1 rounded">
               {duration(clip.duration)}
             </span>
@@ -253,24 +281,26 @@ export default function Updates() {
   }, [clips])
 
   useEffect(() => {
-    if (displayCount >= clips.length) return
+    const pending = clips.filter(c => c.status === 'pending')
+    if (displayCount >= pending.length) return
     const timer = setInterval(() => {
-      setDisplayCount(prev => Math.min(prev + 20, clips.length))
+      setDisplayCount(prev => Math.min(prev + 20, pending.length))
     }, 1200)
     return () => clearInterval(timer)
-  }, [displayCount, clips.length])
+  }, [displayCount, clips])
 
   useEffect(() => {
     const sentinel = sentinelRef.current
     if (!sentinel) return
+    const pending = clips.filter(c => c.status === 'pending')
     const observer = new IntersectionObserver(([entry]) => {
-      if (entry.isIntersecting && displayCount < clips.length) {
-        setDisplayCount(prev => Math.min(prev + 20, clips.length))
+      if (entry.isIntersecting && displayCount < pending.length) {
+        setDisplayCount(prev => Math.min(prev + 20, pending.length))
       }
     }, { rootMargin: '100px' })
     observer.observe(sentinel)
     return () => observer.disconnect()
-  }, [displayCount, clips.length])
+  }, [displayCount, clips])
 
 
   async function handleRefresh() {
@@ -397,6 +427,7 @@ export default function Updates() {
 
   const sinceLabel = lastCheck ? new Date(lastCheck).toLocaleString() : 'the beginning'
   const selectionActive = selectedIds.size > 0
+  const pendingClips = clips.filter(c => c.status === 'pending')
 
   return (
     <div className="flex h-full">
@@ -405,12 +436,12 @@ export default function Updates() {
           <div>
             <h1 className="font-bold text-lg text-twitch-text">Updates</h1>
             <p className="text-xs text-twitch-muted">
-              {loading ? 'Loading...' : `${clips.length} new clip${clips.length !== 1 ? 's' : ''} since ${sinceLabel}`}
+              {loading ? 'Loading...' : `${pendingClips.length} new clip${pendingClips.length !== 1 ? 's' : ''} since ${sinceLabel}`}
             </p>
           </div>
 
           <div className="flex items-center gap-2">
-            {clips.length > 0 && (
+            {pendingClips.length > 0 && (
               <>
                 <button className="btn-success flex items-center gap-1.5 text-xs" onClick={approveAll}>
                   <CheckCheck size={13} /> Approve All
@@ -502,14 +533,14 @@ export default function Updates() {
         <div className="flex-1 overflow-y-auto p-4 space-y-2">
           {loading && <p className="text-twitch-muted text-sm text-center mt-8">Loading...</p>}
 
-          {!loading && clips.length === 0 && (
+          {!loading && pendingClips.length === 0 && (
             <div className="text-center mt-16 space-y-3">
               <p className="text-twitch-muted text-sm">No new clips since {sinceLabel}.</p>
               <p className="text-twitch-border text-xs">Hit "Refresh All Channels" to check for new clips from everyone you follow.</p>
             </div>
           )}
 
-          {clips.slice(0, displayCount).map((clip, idx) => (
+          {pendingClips.slice(0, displayCount).map((clip, idx) => (
             <ClipRow
               key={clip.id}
               clip={clip}

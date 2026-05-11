@@ -51,6 +51,9 @@ async function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  // Clear cached HTTP failures (e.g. thumbnails that failed on a previous launch)
+  await session.defaultSession.clearCache()
+
   // Allow Twitch CDN video/image requests from any origin (desktop app, no CORS needed)
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     callback({

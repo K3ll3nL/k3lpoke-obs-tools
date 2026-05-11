@@ -177,6 +177,22 @@ export async function checkClipsExist(clipIds) {
   return existing
 }
 
+export async function fetchClipDetails(clipIds) {
+  const clips = {}
+  for (let i = 0; i < clipIds.length; i += 100) {
+    const batch = clipIds.slice(i, i + 100)
+    const qs = batch.map(id => `id=${encodeURIComponent(id)}`).join('&')
+    try {
+      const res = await axios.get(`${TWITCH_API}/clips?${qs}&first=100`, { headers: apiHeaders() })
+      res.data.data.forEach(c => {
+        clips[c.id] = { thumbnail_url: c.thumbnail_url, view_count: c.view_count, created_at: c.created_at }
+      })
+      if (i + 100 < clipIds.length) await new Promise(r => setTimeout(r, 250))
+    } catch {}
+  }
+  return clips
+}
+
 export async function fetchClips({ broadcasterId, cursor, limit = 20, startedAt } = {}) {
   const params = { broadcaster_id: broadcasterId, first: limit }
   if (cursor) params.after = cursor

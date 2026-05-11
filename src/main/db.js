@@ -101,6 +101,7 @@ export function upsertClip(clip) {
   if (existing) {
     if (clip.game_name !== undefined) existing.game_name = clip.game_name
     if (clip.view_count !== undefined) existing.view_count = clip.view_count
+    if (clip.thumbnail_url !== undefined) existing.thumbnail_url = clip.thumbnail_url
     save()
     return
   }
@@ -132,6 +133,23 @@ export function setClipEnvelope(id, envelope) {
     clip.envelope = envelope && envelope.length > 0 ? envelope : null
     save()
   }
+}
+
+export function updateClipThumbnails(clipsData, force = false) {
+  let updated = false
+  for (const [clipId, clipData] of Object.entries(clipsData)) {
+    const clip = data.clips.find(c => c.id === clipId)
+    if (clip && (force || !clip.thumbnail_url) && clipData.thumbnail_url) {
+      clip.thumbnail_url = clipData.thumbnail_url
+      updated = true
+    }
+  }
+  if (updated) save()
+}
+
+export function saveThumbnailCache(id, dataUrl) {
+  const clip = data.clips.find(c => c.id === id)
+  if (clip) { clip.thumbnail_url = dataUrl; save() }
 }
 
 export function clipExists(id) {

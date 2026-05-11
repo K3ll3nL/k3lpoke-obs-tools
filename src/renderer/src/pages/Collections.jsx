@@ -2,6 +2,7 @@ import React, { useEffect, useState, useMemo, useRef } from 'react'
 import { Plus, Trash2, Check, X, Layers, ChevronDown, GripVertical } from 'lucide-react'
 import { getEnvelopeVol } from '../components/WaveformEditor'
 import { showUndo, showNotice } from '../lib/undoToast'
+import { generateThumbFromVideo } from '../lib/generateThumb'
 
 const PRESET_COLORS = ['#9146ff', '#0984e3', '#00b894', '#e17055', '#fd79a8', '#fdcb6e']
 
@@ -13,6 +14,7 @@ function duration(secs) {
 
 function ClipCard({ clip, canRemove, onRemove, onDragStart, onDragEnd, collections, selectedId }) {
   const [expanded, setExpanded] = useState(false)
+  const [videoThumb, setVideoThumb] = useState(null)
   const [videoUrl, setVideoUrl] = useState(null)
   const [loadingUrl, setLoadingUrl] = useState(false)
   const [urlError, setUrlError] = useState(null)
@@ -54,8 +56,20 @@ function ClipCard({ clip, canRemove, onRemove, onDragStart, onDragEnd, collectio
     return () => {
       vid.removeEventListener('loadedmetadata', onMeta)
       vid.removeEventListener('timeupdate', onTick)
+      vid.pause()
+      vid.currentTime = 0
     }
   }, [videoUrl, trimStart, trimEnd, clipEnvelope, volume])
+
+  useEffect(() => {
+    if (!expanded) {
+      const vid = videoRef.current
+      if (vid) {
+        vid.pause()
+        vid.currentTime = 0
+      }
+    }
+  }, [expanded])
 
   return (
     <div
@@ -66,10 +80,24 @@ function ClipCard({ clip, canRemove, onRemove, onDragStart, onDragEnd, collectio
     >
       <div className="flex items-center gap-3 p-3 cursor-grab active:cursor-grabbing">
         <GripVertical size={14} className="shrink-0 text-twitch-muted" />
-        <div className="relative shrink-0 w-24 h-[54px] rounded overflow-hidden bg-black">
-          {clip.thumbnail_url
-            ? <img src={clip.thumbnail_url} alt="" className="w-full h-full object-cover" />
-            : <div className="w-full h-full bg-twitch-mid" />}
+        <div className="relative shrink-0 w-24 h-[54px] rounded overflow-hidden bg-twitch-mid">
+          {(videoThumb || clip.thumbnail_url) && (
+            <img src={videoThumb || clip.thumbnail_url} alt="" className="absolute inset-0 w-full h-full object-cover"
+              onLoad={async e => {
+                const i = e.currentTarget
+                if (i.naturalWidth / i.naturalHeight < 1.6) {
+                  i.remove()
+                  try {
+                    const r = await window.api.clips.getVideoUrl(clip.id)
+                    if (!r.ok) return
+                    const url = await generateThumbFromVideo(r.data)
+                    setVideoThumb(url)
+                    window.api.clips.saveThumbnail(clip.id, url)
+                  } catch {}
+                }
+              }}
+              onError={e => e.currentTarget.remove()} />
+          )}
           {clip.duration != null && (
             <span className="absolute bottom-0.5 right-0.5 bg-black/70 text-white text-[9px] px-0.5 rounded">
               {duration(clip.duration)}
@@ -105,8 +133,12 @@ function ClipCard({ clip, canRemove, onRemove, onDragStart, onDragEnd, collectio
       {expanded && (
         <div className="border-t border-twitch-border">
           <div className="bg-black" style={{ aspectRatio: '16/9' }}>
-            {loadingUrl && <div className="w-full h-full flex items-center justify-center text-twitch-muted text-sm">Loading video...</div>}
-            {urlError && <div className="w-full h-full flex items-center justify-center text-red-400 text-sm px-4 text-center">{urlError}</div>}
+            {loadingUrl && (
+              <div className="w-full h-full flex items-center justify-center text-twitch-muted text-sm">Loading video...</div>
+            )}
+            {urlError && (
+              <div className="w-full h-full flex items-center justify-center text-red-400 text-sm px-4 text-center">{urlError}</div>
+            )}
             {videoUrl && <video ref={videoRef} key={videoUrl} className="w-full h-full" controls autoPlay src={videoUrl} />}
           </div>
         </div>
@@ -182,12 +214,24 @@ export default function Collections() {
 
   async function loadSelectedClips() {
     setClipsLoading(true)
+    let r
     if (selectedId === 'main') {
-      const r = await window.api.clips.getQueue()
-      if (r.ok) setClips(r.data)
+      r = await window.api.clips.getQueue()
     } else {
-      const r = await window.api.collections.getClips(selectedId)
-      if (r.ok) setClips(r.data)
+      r = await window.api.collections.getClips(selectedId)
+    }
+    if (r.ok) {
+      setClips(r.data)
+      const missingThumbnails = r.data.filter(c => !c.thumbnail_url).map(c => c.id)
+      if (missingThumbnails.length > 0) {
+        await window.api.clips.fetchMissingThumbnails({ clipIds: missingThumbnails })
+        if (selectedId === 'main') {
+          r = await window.api.clips.getQueue()
+        } else {
+          r = await window.api.collections.getClips(selectedId)
+        }
+        if (r.ok) setClips(r.data)
+      }
     }
     setClipsLoading(false)
   }

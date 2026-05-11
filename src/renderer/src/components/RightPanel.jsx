@@ -1,8 +1,9 @@
 import React, { useEffect, useState, useRef, useMemo } from 'react'
-import { Copy, Monitor, Check, Volume2, Lock, X, Scissors, Activity, Layers, Shuffle, SkipForward, Tag, ChevronDown } from 'lucide-react'
+import { Copy, Monitor, Check, Volume2, Lock, X, Scissors, Activity, Layers, Shuffle, SkipForward, Tag, ChevronDown, AlertTriangle } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import TrimBar from './TrimBar'
 import WaveformEditor from './WaveformEditor'
+import { generateThumbFromVideo } from '../lib/generateThumb'
 
 function duration(secs) {
   const m = Math.floor(secs / 60)
@@ -34,6 +35,22 @@ export default function RightPanel() {
 
   // Up Next
   const [nextClip, setNextClip] = useState(null)
+  const [npThumb, setNpThumb] = useState(null)
+  const [nextThumb, setNextThumb] = useState(null)
+
+  useEffect(() => {
+    if (!nextClip || nextClip.thumbnail_url?.startsWith('data:')) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const r = await window.api.clips.getVideoUrl(nextClip.id)
+        if (!r.ok || cancelled) return
+        const url = await generateThumbFromVideo(r.data)
+        if (!cancelled) { setNextThumb(url); window.api.clips.saveThumbnail(nextClip.id, url) }
+      } catch {}
+    })()
+    return () => { cancelled = true }
+  }, [nextClip?.id])
 
   // Collections / playback source
   const [collections, setCollections] = useState([])
@@ -51,6 +68,7 @@ export default function RightPanel() {
 
   function applyClip(clip) {
     setNowPlaying(clip)
+    setNpThumb(null)
     setNpVolume(clip?.volume ?? 1.0)
     if (clip) {
       setTrimStart(clip.trim_start ?? 0)
@@ -76,7 +94,7 @@ export default function RightPanel() {
       if (lockedRef.current) { pendingClip.current = clip } else { applyClip(clip) }
     })
     window.api.player.getNextClip().then(r => { if (r.ok) setNextClip(r.data) })
-    window.api.player.onNextClip(clip => setNextClip(clip))
+    window.api.player.onNextClip(clip => { setNextClip(clip); setNextThumb(null) })
     window.api.collections.list().then(r => { if (r.ok) setCollections(r.data) })
     window.api.clips.getQueue().then(r => { if (r.ok) setMainQueueCount(r.data.length) })
     window.api.playback.getConfig().then(r => {
@@ -163,6 +181,7 @@ export default function RightPanel() {
   }
 
   // Playback config helpers
+
   function isInWeightedSet(colId) {
     return weightedSets.some(s => s.collectionId === colId)
   }
@@ -194,6 +213,48 @@ export default function RightPanel() {
     setTimeout(() => setNextClipMsg(false), 3000)
   }
 
+  const spacingWarning = useMemo(() => {
+    if (playMode !== 'weighted' || weightedSets.length === 0) return null
+
+    const totalWeight = weightedSets.reduce((s, w) => s + w.weight, 0)
+
+    // Check each enabled custom collection for clip count
+    const shortCollections = weightedSets
+      .filter(set => set.collectionId !== 'main')
+      .map(set => {
+        const col = allCollections.find(c => c.id === set.collectionId)
+        const clipCount = col?.id === 'main' ? mainQueueCount : (collections.find(c => c.id === col?.id)?.clipCount ?? 0)
+        const weight = set.weight
+        const playFrequency = totalWeight > 0 ? weight / totalWeight : 0
+
+        // Collections with very few clips may have insufficient duration
+        // Warn if clip count is low relative to play frequency
+        const minClips = Math.max(2, Math.ceil(5 * playFrequency))
+
+        return {
+          id: set.collectionId,
+          name: col?.name || 'Unknown',
+          clipCount,
+          playFrequency: Math.round(playFrequency * 100),
+          minClips,
+          needsWarning: clipCount < minClips
+        }
+      })
+      .filter(c => c.needsWarning)
+
+    if (shortCollections.length > 0) {
+      const details = shortCollections.map(c =>
+        `${c.name} (${c.clipCount} clips, plays ~${c.playFrequency}% of the time)`
+      ).join(', ')
+      return {
+        severity: 'medium',
+        message: `${details} may have insufficient content.\n\nTo fix: Reduce weight to play less frequently, or add more clips to the collection.`
+      }
+    }
+
+    return null
+  }, [playMode, weightedSets, allCollections, collections, mainQueueCount])
+
   async function savePlaybackConfig() {
     await window.api.playback.setConfig({
       mode: playMode,
@@ -224,10 +285,24 @@ export default function RightPanel() {
         {nowPlaying ? (
           <div className="space-y-3">
             <div className="flex gap-2.5 items-start">
-              <div className="relative shrink-0 w-20 h-[45px] rounded overflow-hidden bg-black">
-                {nowPlaying.thumbnail_url
-                  ? <img src={nowPlaying.thumbnail_url} className="w-full h-full object-cover" alt="" />
-                  : <div className="w-full h-full bg-twitch-surface" />}
+              <div className="relative shrink-0 w-20 h-[45px] rounded overflow-hidden bg-twitch-mid">
+                {(npThumb || nowPlaying.thumbnail_url) && (
+                  <img src={npThumb || nowPlaying.thumbnail_url} className="w-full h-full object-cover" alt=""
+                    onLoad={async e => {
+                      const i = e.currentTarget
+                      if (i.naturalWidth / i.naturalHeight < 1.6) {
+                        i.remove()
+                        try {
+                          const r = await window.api.clips.getVideoUrl(nowPlaying.id)
+                          if (!r.ok) return
+                          const url = await generateThumbFromVideo(r.data)
+                          setNpThumb(url)
+                          window.api.clips.saveThumbnail(nowPlaying.id, url)
+                        } catch {}
+                      }
+                    }}
+                    onError={e => e.currentTarget.remove()} />
+                )}
                 {nowPlaying.duration && (
                   <span className="absolute bottom-0.5 right-0.5 bg-black/70 text-white text-[9px] px-0.5 rounded">
                     {duration(nowPlaying.duration)}
@@ -346,10 +421,15 @@ export default function RightPanel() {
         </h2>
         {nextClip ? (
           <div className="flex gap-2.5 items-start">
-            <div className="relative shrink-0 w-16 h-9 rounded overflow-hidden bg-black">
-              {nextClip.thumbnail_url
-                ? <img src={nextClip.thumbnail_url} className="w-full h-full object-cover" alt="" />
-                : <div className="w-full h-full bg-twitch-surface" />}
+            <div className="relative shrink-0 w-16 h-9 rounded overflow-hidden bg-twitch-surface">
+              {(nextThumb || nextClip.thumbnail_url) && (
+                <img
+                  src={nextThumb || nextClip.thumbnail_url}
+                  className="absolute inset-0 w-full h-full object-cover"
+                  alt=""
+                  onError={e => e.currentTarget.remove()}
+                />
+              )}
             </div>
             <div className="flex-1 min-w-0">
               <p className="text-xs font-medium text-twitch-text leading-snug line-clamp-2">{nextClip.title}</p>
@@ -450,13 +530,26 @@ export default function RightPanel() {
             {weightedSets.length === 0 && (
               <p className="text-[11px] text-twitch-border">Check collections above to include them.</p>
             )}
-            <button
-              onClick={savePlaybackConfig}
-              disabled={weightedSets.length === 0}
-              className="btn-purple w-full text-xs py-1.5 flex items-center justify-center gap-1 mt-1"
-            >
-              {configSaved ? <><Check size={11} /> Saved</> : 'Apply Mix'}
-            </button>
+            <div className="space-y-1.5">
+              {spacingWarning && (
+                <div className="relative group">
+                  <div className="flex items-center gap-1.5 px-2 py-1.5 bg-amber-500/10 border border-amber-500/30 rounded text-[10px]">
+                    <AlertTriangle size={12} className="text-amber-500 shrink-0" />
+                    <span className="text-amber-500/70 flex-1">Spacing Warning</span>
+                    <div className="hidden group-hover:block absolute right-0 bottom-full mb-2 w-48 bg-black border border-twitch-border rounded-lg shadow-lg p-2 z-50">
+                      <p className="text-[10px] text-twitch-text whitespace-pre-wrap">{spacingWarning.message}</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+              <button
+                onClick={savePlaybackConfig}
+                disabled={weightedSets.length === 0}
+                className="btn-purple w-full text-xs py-1.5 flex items-center justify-center gap-1 mt-1"
+              >
+                {configSaved ? <><Check size={11} /> Saved</> : 'Apply Mix'}
+              </button>
+            </div>
           </div>
         )}
         {nextClipMsg && (

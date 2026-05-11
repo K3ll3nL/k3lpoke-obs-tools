@@ -86,6 +86,7 @@ export default function ClipSettings() {
     biasPopular: false,
     biasRecent: false,
     channelWeights: {},
+    minCollectionDuration: 300, // 5 minutes in seconds
   })
   const [configReady, setConfigReady] = useState(false)
 
@@ -317,6 +318,23 @@ export default function ClipSettings() {
                 checked={overlayConfig.playAllBeforeLoop ?? true}
                 onChange={v => setOverlayConfig(p => ({ ...p, playAllBeforeLoop: v }))}
               />
+              <div className="pt-3 border-t border-twitch-border">
+                <label className="label mb-2 block">Minimum Collection Duration</label>
+                <p className="text-xs text-twitch-muted mb-3">
+                  When a custom collection clip plays, block main queue clips until the collection clip finishes. Warn if a collection has less than this duration.
+                </p>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="range" min="60" max="900" step="30"
+                    value={overlayConfig.minCollectionDuration ?? 300}
+                    onChange={e => setOverlayConfig(p => ({ ...p, minCollectionDuration: Number(e.target.value) }))}
+                    className="flex-1 accent-twitch-purple"
+                  />
+                  <span className="text-xs text-twitch-text font-mono w-16 text-right">
+                    {Math.floor((overlayConfig.minCollectionDuration ?? 300) / 60)}m {((overlayConfig.minCollectionDuration ?? 300) % 60)}s
+                  </span>
+                </div>
+              </div>
             </div>
           </div>
         </section>

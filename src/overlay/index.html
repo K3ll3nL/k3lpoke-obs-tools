@@ -103,6 +103,7 @@
     let started      = false
     let wsRef        = null
     let activeClip   = null
+    let activeCollectionId = null  // Track which collection the current clip belongs to
 
     // OBS reroute_audio captures the HTML video element's native audio output directly.
     // createMediaElementSource() disconnects that pipeline and routes through Web Audio,
@@ -176,10 +177,16 @@
         ;(byChannel[ch] = byChannel[ch] || []).push(c)
       }
 
-      const channels = Object.keys(byChannel)
+      // Filter out clips from channels with 0 weight
+      const activeChannels = Object.keys(byChannel).filter(ch => (channelWeights[ch] ?? 1) > 0)
+      const filtered = clips.filter(c => activeChannels.includes(c.broadcaster_name || ''))
+      if (filtered.length === 0) return shuffle(clips) // Fallback if all channels are 0-weight
+      if (filtered.length <= 1) return filtered
+
+      const channels = activeChannels
       const totalChW = channels.reduce((s, ch) => s + (channelWeights[ch] ?? 1), 0)
 
-      const scored = clips.map(clip => {
+      const scored = filtered.map(clip => {
         const ch = clip.broadcaster_name || ''
         const group = byChannel[ch]
 
@@ -221,10 +228,12 @@
           colQueues[col.id]  = biasedShuffle(col.clips || [])
           colIndices[col.id] = prevIndices[col.id] ?? 0
         }
+        activeCollectionId = null
       } catch {
         playCfg   = { mode: 'single', activeCollectionId: 'main', weightedSets: [], collections: [] }
         colQueues  = {}
         colIndices = {}
+        activeCollectionId = null
       }
     }
 
@@ -238,6 +247,21 @@
       }
       const sets = (playCfg.weightedSets || []).filter(s => colQueues[s.collectionId]?.length > 0 && s.weight > 0)
       if (!sets.length) return 'main'
+
+      // If a collection clip is playing, block main queue from interrupting it
+      if (activeCollectionId && activeCollectionId !== 'main') {
+        const setsWithClips = sets.filter(s => s.collectionId !== 'main')
+        if (setsWithClips.length > 0) {
+          const total = setsWithClips.reduce((s, w) => s + w.weight, 0)
+          let rand = Math.random() * total
+          for (const set of setsWithClips) {
+            rand -= set.weight
+            if (rand <= 0) return set.collectionId
+          }
+          return setsWithClips[setsWithClips.length - 1].collectionId
+        }
+      }
+
       const total = sets.reduce((s, w) => s + w.weight, 0)
       let rand = Math.random() * total
       for (const set of sets) {
@@ -258,9 +282,15 @@
         const ch = c.broadcaster_name || '';
         (byChannel[ch] = byChannel[ch] || []).push(c)
       }
-      const channels = Object.keys(byChannel)
+      // Filter out clips from channels with 0 weight
+      const activeChannels = Object.keys(byChannel).filter(ch => (channelWeights[ch] ?? 1) > 0)
+      const filtered = clips.filter(c => activeChannels.includes(c.broadcaster_name || ''))
+      if (filtered.length === 0) return clips[Math.floor(Math.random() * clips.length)] // Fallback if all channels are 0-weight
+      if (filtered.length === 1) return filtered[0]
+
+      const channels = activeChannels
       const totalChW = channels.reduce((s, ch) => s + (channelWeights[ch] ?? 1), 0)
-      const scored = clips.map(clip => {
+      const scored = filtered.map(clip => {
         const ch = clip.broadcaster_name || '', group = byChannel[ch]
         const chW = channelWeights[ch] ?? 1
         let weight = (chW / totalChW) / group.length
@@ -287,10 +317,15 @@
       const effectiveId = colQueues[colId]?.length ? colId : 'main'
       const q = colQueues[effectiveId]
       if (!q || !q.length) return null
-      if (!config.playAllBeforeLoop) return weightedRandom(q)
-      const idx = colIndices[effectiveId] ?? 0
-      const clip = q[idx % q.length]
-      colIndices[effectiveId] = idx + 1
+      let clip
+      if (!config.playAllBeforeLoop) {
+        clip = weightedRandom(q)
+      } else {
+        const idx = colIndices[effectiveId] ?? 0
+        clip = q[idx % q.length]
+        colIndices[effectiveId] = idx + 1
+      }
+      clip._collectionId = effectiveId
       return clip
     }
 
@@ -387,6 +422,7 @@
     function onClipEnded() {
       clearTimeout(overlayTimer)
       info.classList.remove('visible')
+      activeCollectionId = null
       switchToPreloaded()
     }
 
@@ -458,6 +494,7 @@
 
       activeClip = clip
       activeClipId = clip.id
+      activeCollectionId = clip._collectionId
       notifyNowPlaying(clip)
       showClipInfo(clip)
       schedulePreload()
@@ -470,6 +507,7 @@
         if (!hasAnyClips()) { setTimeout(begin, 10000); return }
       }
 
+      activeCollectionId = null
       const clip = takeNextClip()
       if (!clip) return
 
@@ -495,6 +533,7 @@
 
         activeClip = clip
         activeClipId = clip.id
+        activeCollectionId = clip._collectionId
         notifyNowPlaying(clip)
         showClipInfo(clip)
         schedulePreload()
@@ -527,7 +566,7 @@
           }
           if (msg.type === 'config') applyConfig(msg.config)
           if (msg.type === 'stop') {
-            colQueues = {}; colIndices = {}; nextPreload = null
+            colQueues = {}; colIndices = {}; nextPreload = null; activeCollectionId = null
             slots.forEach(s => { s.video.pause(); s.video.src = '' })
           }
           if (msg.type === 'volume-update' && msg.clipId === activeClipId) {
@@ -549,9 +588,23 @@
       begin()
     }
 
-    connectWS()
-    // Fallback if WS is slow — but only if the source is actually visible
-    setTimeout(tryBegin, 1500)
+    // Only auto-play if NOT in Electron app context
+    // OBS browser sources will play normally; Electron app windows will be muted
+    const isElectron = typeof window !== 'undefined' && (window.process?.type === 'renderer' || window.__ELECTRON_PRELOAD__)
+
+    if (isElectron) {
+      // Mute and don't auto-play in Electron app
+      slots.forEach(s => {
+        s.video.muted = true
+        s.video.pause()
+      })
+      // Don't auto-connect or start playback
+    } else {
+      // In OBS or normal browser - enable full playback
+      connectWS()
+      // Fallback if WS is slow — but only if the source is actually visible
+      setTimeout(tryBegin, 1500)
+    }
 
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) {

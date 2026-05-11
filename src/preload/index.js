@@ -35,7 +35,9 @@ contextBridge.exposeInMainWorld('api', {
     bulkDeny: (ids) => invoke('clips:bulkDeny', { ids }),
     bulkSetStatus: (ids, status) => invoke('clips:bulkSetStatus', { ids, status }),
     remove: (id) => invoke('clips:remove', { id }),
-    reorder: (ids) => invoke('clips:reorder', { ids })
+    reorder: (ids) => invoke('clips:reorder', { ids }),
+    refreshThumbnail: (id) => invoke('clips:refreshThumbnail', { id }),
+    saveThumbnail: (id, dataUrl) => invoke('clips:saveThumbnail', { id, dataUrl }),
   },
 
   // Channels

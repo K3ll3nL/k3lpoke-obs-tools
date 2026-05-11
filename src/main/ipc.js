@@ -2,7 +2,7 @@ import { ipcMain, app, dialog } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import {
   initTwitch, getTwitchState, setClientId, startOAuthFlow, logout,
-  fetchUserByLogin, fetchClips, getClipVideoUrl, checkClipsExist, searchChannels as searchTwitchChannels,
+  fetchUserByLogin, fetchClips, getClipVideoUrl, checkClipsExist, fetchClipDetails, searchChannels as searchTwitchChannels,
   validateTokenScopes, startBotOAuthFlow, logoutBot as logoutBotAccount,
   sendChatMessage, sendAnnouncement, fetchFollowage as fetchFollowageApi
 } from './twitch.js'
@@ -10,10 +10,10 @@ import { connectOBS, disconnectOBS, isConnected, getSceneList, addBrowserSource,
 import {
   getClipsByStatus, getAllClips, getNewClips, setClipStatus, bulkSetStatus, removeClip, reorderQueue,
   upsertClip, clipExists, getChannels, upsertChannel, removeChannel,
-  updateChannelCursor, getSetting, setSetting, getAllSettings, setClipVolume, setClipTrim, setClipEnvelope,
+  updateChannelCursor, getSetting, setSetting, getAllSettings, setClipVolume, setClipTrim, setClipEnvelope, updateClipThumbnails,
   getCollections, createCollection, updateCollection, deleteCollection,
   addClipToCollection, removeClipFromCollection, getCollectionClips, getCollectionMemberships,
-  getPlaybackConfig, setPlaybackConfig,
+  getPlaybackConfig, setPlaybackConfig, saveThumbnailCache,
   getShinyDevices, addShinyDevice, updateShinyDevice, removeShinyDevice,
   getShinyLayouts, createShinyLayout, updateShinyLayout,
   setShinyLayoutPosition, replaceShinyLayoutPositions, removeDeviceFromShinyLayout, removeShinyLayout,
@@ -192,6 +192,21 @@ export async function registerIpcHandlers(mainWindow) {
   handle('clips:getPending', () => getClipsByStatus('pending'))
   handle('clips:getAll', ({ broadcasterName } = {}) => getAllClips(broadcasterName))
   handle('clips:getNew', ({ since } = {}) => getNewClips(since))
+  handle('clips:fetchMissingThumbnails', async ({ clipIds }) => {
+    const details = await fetchClipDetails(clipIds)
+    updateClipThumbnails(details)
+    return Object.keys(details)
+  })
+  handle('clips:refreshThumbnail', async ({ id }) => {
+    const details = await fetchClipDetails([id])
+    if (details[id]?.thumbnail_url) {
+      updateClipThumbnails(details, true)
+      return details[id].thumbnail_url
+    }
+    return null
+  })
+
+  handle('clips:saveThumbnail', ({ id, dataUrl }) => saveThumbnailCache(id, dataUrl))
 
   handle('clips:approve', ({ id }) => { setClipStatus(id, 'approved'); notifyQueueUpdated() })
   handle('clips:deny', ({ id }) => setClipStatus(id, 'denied'))

@@ -3,6 +3,7 @@ import { createServer } from 'http'
 import { WebSocketServer } from 'ws'
 import cors from 'cors'
 import path from 'path'
+import axios from 'axios'
 import { fileURLToPath } from 'url'
 import { app as electronApp } from 'electron'
 import { getClipVideoUrl, receiveAuthToken } from './twitch.js'
@@ -73,6 +74,20 @@ app.get('/api/clip-url/:id', async (req, res) => {
     res.json({ url })
   } catch (err) {
     res.status(500).json({ error: err.message })
+  }
+})
+
+// Thumbnail proxy — fetches from Twitch CDN and serves locally
+app.get('/api/thumbnail/:id', async (req, res) => {
+  try {
+    const clip = getClipById(req.params.id)
+    if (!clip || !clip.thumbnail_url) {
+      return res.status(404).json({ error: 'Thumbnail not found' })
+    }
+    const response = await axios.get(clip.thumbnail_url, { responseType: 'arraybuffer', timeout: 5000 })
+    res.type('image/jpeg').send(response.data)
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch thumbnail' })
   }
 })
 

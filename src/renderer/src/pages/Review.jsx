@@ -7,6 +7,7 @@ import CollectionPicker from '../components/CollectionPicker'
 import ControlToggleButtons from '../components/ControlToggleButtons'
 import VolumeSlider from '../components/VolumeSlider'
 import { showUndo } from '../lib/undoToast'
+import { generateThumbFromVideo } from '../lib/generateThumb'
 
 function duration(secs) {
   const m = Math.floor(secs / 60)
@@ -16,6 +17,7 @@ function duration(secs) {
 
 const ClipRow = React.memo(function ClipRow({ clip, onStatusChange, collections, onCollectionsChanged, selected, onToggleSelect, clipIndex, selectionActive }) {
   const [expanded, setExpanded] = useState(false)
+  const [videoThumb, setVideoThumb] = useState(null)
   const [videoUrl, setVideoUrl] = useState(null)
   const [loadingUrl, setLoadingUrl] = useState(false)
   const [urlError, setUrlError] = useState(null)
@@ -68,8 +70,23 @@ const ClipRow = React.memo(function ClipRow({ clip, onStatusChange, collections,
     vid.addEventListener('loadedmetadata', onMeta)
     vid.addEventListener('timeupdate', onTick)
     if (vid.readyState >= 1) vid.currentTime = trimStart
-    return () => { vid.removeEventListener('loadedmetadata', onMeta); vid.removeEventListener('timeupdate', onTick) }
+    return () => {
+      vid.removeEventListener('loadedmetadata', onMeta)
+      vid.removeEventListener('timeupdate', onTick)
+      vid.pause()
+      vid.currentTime = 0
+    }
   }, [videoUrl, trimStart, trimEnd, clipEnvelope, volume])
+
+  useEffect(() => {
+    if (!expanded) {
+      const vid = videoRef.current
+      if (vid) {
+        vid.pause()
+        vid.currentTime = 0
+      }
+    }
+  }, [expanded])
 
   async function handleExpand() {
     const open = !expanded
@@ -131,10 +148,24 @@ const ClipRow = React.memo(function ClipRow({ clip, onStatusChange, collections,
 
         {/* Expand area */}
         <button className="flex-1 min-w-0 text-left flex gap-3 p-3 hover:bg-white/5 transition-colors" onClick={handleExpand}>
-          <div className="relative shrink-0 w-32 h-[72px] rounded overflow-hidden bg-black">
-            {clip.thumbnail_url
-              ? <img src={clip.thumbnail_url} alt="" className="w-full h-full object-cover" />
-              : <div className="w-full h-full bg-twitch-mid" />}
+          <div className="relative shrink-0 w-32 h-[72px] rounded overflow-hidden bg-twitch-mid">
+            {(videoThumb || clip.thumbnail_url) && (
+              <img src={videoThumb || clip.thumbnail_url} alt="" className="absolute inset-0 w-full h-full object-cover"
+                onLoad={async e => {
+                  const i = e.currentTarget
+                  if (i.naturalWidth / i.naturalHeight < 1.6) {
+                    i.remove()
+                    try {
+                      const r = await window.api.clips.getVideoUrl(clip.id)
+                      if (!r.ok) return
+                      const url = await generateThumbFromVideo(r.data)
+                      setVideoThumb(url)
+                      window.api.clips.saveThumbnail(clip.id, url)
+                    } catch {}
+                  }
+                }}
+                onError={e => e.currentTarget.remove()} />
+            )}
             <span className="absolute bottom-1 right-1 bg-black/70 text-white text-[10px] px-1 rounded">
               {duration(clip.duration)}
             </span>
@@ -222,8 +253,12 @@ const ClipRow = React.memo(function ClipRow({ clip, onStatusChange, collections,
       {expanded && (
         <div className="border-t border-twitch-border">
           <div className="bg-black" style={{ aspectRatio: '16/9' }}>
-            {loadingUrl && <div className="w-full h-full flex items-center justify-center text-twitch-muted text-sm">Loading video...</div>}
-            {urlError && <div className="w-full h-full flex items-center justify-center text-red-400 text-sm px-4 text-center">{urlError}</div>}
+            {loadingUrl && (
+              <div className="w-full h-full flex items-center justify-center text-twitch-muted text-sm">Loading video...</div>
+            )}
+            {urlError && (
+              <div className="w-full h-full flex items-center justify-center text-red-400 text-sm px-4 text-center">{urlError}</div>
+            )}
             {videoUrl && <video ref={videoRef} key={videoUrl} className="w-full h-full" controls autoPlay src={videoUrl} />}
           </div>
           <div className="px-4 py-3 border-t border-twitch-border space-y-2">
@@ -321,13 +356,21 @@ export default function Review() {
 
   async function loadClips() {
     setLoading(true)
-    let r 
+    let r
     if(selectedChannel==='all'){
       r = await window.api.clips.getAll()
     }else{
       r = await window.api.clips.getAll(selectedChannel)
     }
-    if (r.ok) setAllClips(r.data)
+    if (r.ok) {
+      setAllClips(r.data)
+      const missingThumbnails = r.data.filter(c => !c.thumbnail_url).map(c => c.id)
+      if (missingThumbnails.length > 0) {
+        await window.api.clips.fetchMissingThumbnails({ clipIds: missingThumbnails })
+        r = await window.api.clips.getAll(selectedChannel === 'all' ? undefined : selectedChannel)
+        if (r.ok) setAllClips(r.data)
+      }
+    }
     setLoading(false)
   }
 
