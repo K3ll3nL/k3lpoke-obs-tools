@@ -44,7 +44,6 @@ export default function Nav({ obsConnected, twitchUser, subscribedIds }) {
           }}
         >
 
-
           {/* pull currentApp.image if it exists, otherwise show a default icon */}
           {currentApp?.image ? (
             currentApp.image()
@@ -60,11 +59,10 @@ export default function Nav({ obsConnected, twitchUser, subscribedIds }) {
 
         {/* Current app nav items */}
         <nav className="flex flex-col gap-1 flex-1 w-full items-center">
-          {navItems.map(({ to, icon: Icon, label, end }) => (
+          {navItems.map(({ to, icon: Icon, label }) => (
             <NavLink
               key={to}
               to={to}
-              end={!!end}
               title={label}
               className={({ isActive }) =>
                 `w-10 h-10 rounded-lg flex items-center justify-center transition-colors ` +

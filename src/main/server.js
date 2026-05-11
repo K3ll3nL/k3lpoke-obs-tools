@@ -32,6 +32,11 @@ const dockDir = electronApp.isPackaged
   : path.join(__dirname, '../../src/dock')
 app.use('/dock', express.static(dockDir))
 
+const playerDir = electronApp.isPackaged
+  ? path.join(process.resourcesPath, 'player')
+  : path.join(__dirname, '../../src/player')
+app.use('/player', express.static(playerDir))
+
 app.get('/api/shiny/state', (req, res) => {
   res.json({ layout: getShinyLayoutForScene(shinyCurrentScene), currentScene: shinyCurrentScene, currentDeviceId: shinyCurrentDeviceId })
 })
@@ -248,4 +253,8 @@ export function getOverlayUrl() {
 
 export function getDockUrl() {
   return `http://localhost:${PORT}/dock/index.html`
+}
+
+export function getPlayerUrl() {
+  return `http://localhost:${PORT}/player/index.html`
 }

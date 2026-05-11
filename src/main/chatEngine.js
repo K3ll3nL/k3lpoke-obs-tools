@@ -1,4 +1,5 @@
 import WebSocket from 'ws'
+import fs from 'fs'
 
 // ── IRC connection ─────────────────────────────────────────────────────────
 
@@ -384,8 +385,10 @@ export function renderTemplate(template, ctx) {
 
 // ── Cooldown tracking (in-memory) ─────────────────────────────────────────
 
-const _globalCooldowns = {}   // triggerId -> timestamp
-const _userCooldowns   = {}   // `${triggerId}:${username}` -> timestamp
+const _globalCooldowns     = {}  // triggerId -> timestamp
+const _userCooldowns       = {}  // `${triggerId}:${username}` -> timestamp
+const _chatActivityCounters = {} // triggerId -> message count since last fire
+const _sceneOnceUsed       = new Set() // sceneName already suppressed this session
 
 export function checkAndSetCooldowns(trigger, username) {
   const now = Date.now()
@@ -406,19 +409,232 @@ export function checkAndSetCooldowns(trigger, username) {
   return true
 }
 
-// ── Full trigger run ───────────────────────────────────────────────────────
-// Called by the IPC handler on each incoming message.
-// Returns list of { triggerId, actions } that fired.
+// ── Considerations ─────────────────────────────────────────────────────────
 
-export async function runTriggers(msg, triggers, { sendChatMessage, sendAnnouncement, fetchFollowage, fetchUserByLogin, mainUser, botAccount }) {
+function normalizeText(text, ignoreSpaces, ignorePunct) {
+  let t = text.toLowerCase()
+  if (ignoreSpaces) t = t.replace(/\s/g, '')
+  if (ignorePunct)  t = t.replace(/[^\w]/g, '')
+  return t
+}
+
+function normalizeWords(words, ignoreSpaces, ignorePunct) {
+  return words.map(w => normalizeText(w, ignoreSpaces, ignorePunct))
+}
+
+function checkLanguageFilter(text, { mode, words = [], ignoreSpaces, ignorePunct }) {
+  const norm = normalizeText(text, ignoreSpaces, ignorePunct)
+  const normWords = normalizeWords(words, ignoreSpaces, ignorePunct).filter(Boolean)
+  if (normWords.length === 0) return true
+  if (mode === 'require') return normWords.every(w => norm.includes(w))
+  if (mode === 'blacklist') return !normWords.some(w => norm.includes(w))
+  return true
+}
+
+async function evaluateConsiderations(considerations, msg, triggerId, opts) {
+  let waitMs = 0
+  for (const c of considerations) {
+    if (!c.enabled) continue
+    switch (c.type) {
+      case 'chance':
+        if (Math.random() * 100 >= c.percent) return { pass: false }
+        break
+      case 'language_filter':
+        if (!checkLanguageFilter(msg.text, c)) return { pass: false }
+        break
+      case 'wait':
+        waitMs = Math.max(waitMs, (c.seconds ?? 0) * 1000)
+        break
+      case 'chat_activity': {
+        const count = _chatActivityCounters[triggerId] ?? 0
+        if (count < (c.messageCount ?? 1)) return { pass: false }
+        _chatActivityCounters[triggerId] = 0
+        break
+      }
+      case 'obs_source': {
+        const scene = c.scene ?? opts.getCurrentScene?.()
+        if (!scene) break
+        const poll = async () => {
+          const items = await opts.obsGetSceneItemList?.(scene) ?? []
+          const item = items.find(i => i.sourceName === c.source)
+          const isVisible = item?.sceneItemEnabled ?? false
+          return c.state === 'visible' ? isVisible : !isVisible
+        }
+        const ok = await poll()
+        if (!ok) {
+          if (c.onFail === 'wait') {
+            const deadline = Date.now() + 30000
+            let passed = false
+            while (Date.now() < deadline) {
+              await new Promise(r => setTimeout(r, 1000))
+              if (await poll()) { passed = true; break }
+            }
+            if (!passed) return { pass: false }
+          } else {
+            return { pass: false }
+          }
+        }
+        break
+      }
+    }
+  }
+  return { pass: true, waitMs }
+}
+
+// ── Response selection ────────────────────────────────────────────────────
+
+async function selectResponse(responses, conditions, routing, msg, opts) {
+  const { fetchFollowage, mainUser } = opts
+
+  // Check routing: evaluate each condition and find matching response
+  for (const route of routing) {
+    const condition = conditions.find(c => c.id === route.conditionId)
+    if (!condition) continue
+
+    const matches = await evaluateConditionForResponse(condition, msg, opts)
+    if (matches) {
+      return responses.find(r => r.id === route.responseId)
+    }
+  }
+
+  // Fallback: return first response (unconditioned)
+  return responses[0]
+}
+
+// Legacy fallback for old responseGroups structure
+async function selectResponseGroup(groups, msg, opts) {
+  const { fetchFollowage, mainUser } = opts
+
+  // Phase 1: Check deterministic conditions (user role, language filter)
+  for (const group of groups) {
+    const cond = group.condition
+    if (!cond || cond.type === 'random') continue
+
+    if (cond.type === 'user_role') {
+      const roles = cond.roles ?? []
+      let match = false
+      if (roles.includes('moderator') && msg.isMod) match = true
+      if (roles.includes('vip') && msg.isVip) match = true
+      if (roles.includes('subscriber') && msg.isSubscriber) match = true
+      if (roles.includes('follower') && !match && mainUser?.id) {
+        try {
+          const fa = await fetchFollowage?.(msg.userId, mainUser.id)
+          if (fa && fa !== '(unknown)') match = true
+        } catch {}
+      }
+      if (match) return group
+    }
+
+    if (cond.type === 'language_filter') {
+      if (checkLanguageFilter(msg.text, cond)) return group
+    }
+  }
+
+  // Phase 2: Weighted random
+  const randomGroups = groups.filter(g => g.condition?.type === 'random')
+  if (randomGroups.length > 0) {
+    const totalWeight = randomGroups.reduce((sum, g) => sum + (g.condition.weight ?? 1), 0)
+    let random = Math.random() * totalWeight
+    for (const group of randomGroups) {
+      random -= (group.condition.weight ?? 1)
+      if (random <= 0) return group
+    }
+    return randomGroups[randomGroups.length - 1]
+  }
+
+  // Fallback
+  return groups.find(g => g.condition === null) ?? groups[0]
+}
+
+async function evaluateConditionForResponse(condition, msg, opts) {
+  const { fetchFollowage, mainUser } = opts
+
+  if (condition.type === 'user_role') {
+    const roles = condition.roles ?? []
+    let match = false
+    if (roles.includes('moderator') && msg.isMod) match = true
+    if (roles.includes('vip') && msg.isVip) match = true
+    if (roles.includes('subscriber') && msg.isSubscriber) match = true
+    if (roles.includes('follower') && !match && mainUser?.id) {
+      try {
+        const fa = await fetchFollowage?.(msg.userId, mainUser.id)
+        if (fa && fa !== '(unknown)') match = true
+      } catch {}
+    }
+    return match
+  }
+
+  if (condition.type === 'language_filter') {
+    return checkLanguageFilter(msg.text, condition)
+  }
+
+  if (condition.type === 'random') {
+    const weight = condition.weight ?? 1
+    const totalWeight = weight // For single condition, weight is the total
+    return Math.random() < (weight / totalWeight)
+  }
+
+  return false
+}
+
+// ── Random line reader ─────────────────────────────────────────────────────
+
+function readRandomLine(filePath, randomize = true, weights = []) {
+  try {
+    const lines = fs.readFileSync(filePath, 'utf8').split('\n').map(l => l.trim()).filter(Boolean)
+    if (lines.length === 0) return ''
+    if (!randomize) return lines[0]
+    if (weights.length === lines.length) {
+      const total = weights.reduce((s, w) => s + (w || 1), 0)
+      let r = Math.random() * total
+      for (let i = 0; i < lines.length; i++) {
+        r -= (weights[i] || 1)
+        if (r <= 0) return lines[i]
+      }
+    }
+    return lines[Math.floor(Math.random() * lines.length)]
+  } catch { return '' }
+}
+
+// ── Full trigger run ───────────────────────────────────────────────────────
+
+export async function runTriggers(msg, triggers, opts = {}) {
+  const {
+    sendChatMessage, sendAnnouncement, fetchFollowage, fetchUserByLogin,
+    mainUser, botAccount,
+    obsGetSceneItemList, obsSetSourceVisibility, getCurrentScene,
+    globalSceneBlacklist = {}
+  } = opts
   const fired = []
 
+  // Increment chat activity counters for all triggers
+  for (const t of triggers) {
+    _chatActivityCounters[t.id] = (_chatActivityCounters[t.id] ?? 0) + 1
+  }
+
   for (const trigger of triggers) {
+    // Scene blacklist check
+    const currentScene = getCurrentScene?.()
+    if (currentScene && globalSceneBlacklist[currentScene]) {
+      if (globalSceneBlacklist[currentScene] === 'always') continue
+      if (globalSceneBlacklist[currentScene] === 'once' && !_sceneOnceUsed.has(currentScene)) {
+        _sceneOnceUsed.add(currentScene)
+        continue
+      }
+    }
+
     const match = matchTrigger(trigger, msg)
     if (!match) continue
     if (!checkAndSetCooldowns(trigger, msg.username)) continue
 
-    // Resolve any async template variables needed
+    // Evaluate considerations
+    const { pass, waitMs = 0 } = await evaluateConsiderations(
+      trigger.considerations ?? [], msg, trigger.id,
+      { getCurrentScene, obsGetSceneItemList }
+    )
+    if (!pass) continue
+
+    // Build context
     const ctx = {
       username: msg.username,
       displayName: msg.displayName,
@@ -427,56 +643,99 @@ export async function runTriggers(msg, triggers, { sendChatMessage, sendAnnounce
       params: { ...match.params },
     }
 
-    // Apply param defaults for optional params that weren't provided
     for (const p of trigger.commandParams ?? []) {
       if (p.optional && !ctx.params[p.name] && p.defaultValue) {
         ctx.params[p.name] = renderTemplate(p.defaultValue, { ...ctx, params: {} })
       }
     }
 
-    const needsFollowage = (trigger.actions ?? []).some(a => /\{followage[_}]/.test(a.template ?? ''))
-    if (needsFollowage && mainUser?.id) {
-      ctx.followage = await fetchFollowage(msg.userId, mainUser.id).catch(() => null) ?? '(unknown)'
+    // Select response using new structure
+    const conditions = trigger.conditions ?? []
+    const responses = trigger.responses ?? []
+    const routing = trigger.routing ?? []
+
+    // Fallback for old structure
+    let actionsToRun = []
+    if (responses.length > 0) {
+      const response = await selectResponse(responses, conditions, routing, msg, { fetchFollowage, mainUser })
+      actionsToRun = response?.actions ?? []
+    } else if (trigger.responseGroups) {
+      // Old structure fallback
+      const groups = trigger.responseGroups
+      const group = await selectResponseGroup(groups, msg, { fetchFollowage, mainUser })
+      actionsToRun = group?.actions ?? []
     }
 
-    const followageOfParams = new Set()
-    for (const action of trigger.actions ?? []) {
-      const matches = [...(action.template ?? '').matchAll(/\{followage_of:(\w+)\}/gi)]
-      for (const m of matches) followageOfParams.add(m[1])
+    if (!actionsToRun || actionsToRun.length === 0) continue
+
+    // Prefetch followage if any chat action needs it
+    const allTemplates = actionsToRun.map(a => a.template ?? '').join(' ')
+    if (/\{followage[_}]/.test(allTemplates) && mainUser?.id) {
+      ctx.followage = await fetchFollowage?.(msg.userId, mainUser.id).catch(() => null) ?? '(unknown)'
     }
+    const followageOfParams = new Set()
+    for (const m of allTemplates.matchAll(/\{followage_of:(\w+)\}/gi)) followageOfParams.add(m[1])
     if (followageOfParams.size > 0 && mainUser?.id) {
       ctx.followageOf = {}
       for (const param of followageOfParams) {
         const targetUsername = match.params[param]
         if (targetUsername) {
-          // look up user id first then followage
           ctx.followageOf[param] = '(unknown)'
           try {
             const user = fetchUserByLogin ? await fetchUserByLogin(targetUsername) : null
-            if (user) ctx.followageOf[param] = await fetchFollowage(user.id, mainUser.id) ?? '(unknown)'
+            if (user) ctx.followageOf[param] = await fetchFollowage?.(user.id, mainUser.id) ?? '(unknown)'
           } catch {}
         }
       }
     }
 
-    // Execute actions sequentially with delay support
-    for (const action of trigger.actions ?? []) {
+    // Apply wait consideration delay before first action
+    if (waitMs > 0) await new Promise(r => setTimeout(r, waitMs))
+
+    // Execute actions
+    for (const action of actionsToRun) {
       if (action.delay > 0) await new Promise(r => setTimeout(r, action.delay * 1000))
 
-      const text = renderTemplate(action.template ?? '', ctx)
-      if (!text.trim()) continue
-
-      const useBot = action.useBot && botAccount
-      const senderToken = useBot ? botAccount.token : null
-      const senderId = useBot ? botAccount.user?.id : mainUser?.id
-
       try {
-        if (action.type === 'send_announcement') {
-          await sendAnnouncement(mainUser?.id, mainUser?.id, text, action.announcementColor ?? 'primary', senderToken ?? undefined)
+        if (action.type === 'obs_set_source') {
+          await obsSetSourceVisibility?.({ sceneName: action.scene ?? null, sourceName: action.source, visible: action.visible ?? true })
+          _mainWindow?.webContents.send('chatTriggers:fired', { triggerId: trigger.id, triggerName: trigger.name, action: action.type })
+        } else if (action.type === 'play_media') {
+          _mainWindow?.webContents.send('chatTriggers:playMedia', {
+            filePath: action.filePath, device: action.device ?? '', volume: action.volume ?? 1.0
+          })
+          _mainWindow?.webContents.send('chatTriggers:fired', { triggerId: trigger.id, triggerName: trigger.name, action: action.type })
+        } else if (action.type === 'random_line') {
+          let line = ''
+          if (action.lineMode === 'manual') {
+            const lines = action.lines ?? []
+            if (lines.length === 0) continue
+            if (!action.randomize) line = lines[0]
+            else line = lines[Math.floor(Math.random() * lines.length)]
+          } else {
+            line = readRandomLine(action.filePath, action.randomize ?? true, action.weights ?? [])
+            if (!line) continue
+          }
+          const text = renderTemplate(line, ctx)
+          const useBot = action.useBot && botAccount
+          const senderToken = useBot ? botAccount.token : null
+          const senderId = useBot ? botAccount.user?.id : mainUser?.id
+          await sendChatMessage?.(mainUser?.id, senderId, text, senderToken ?? undefined)
+          _mainWindow?.webContents.send('chatTriggers:fired', { triggerId: trigger.id, triggerName: trigger.name, action: action.type, text })
         } else {
-          await sendChatMessage(mainUser?.id, senderId, text, senderToken ?? undefined)
+          const text = renderTemplate(action.template ?? '', ctx)
+          if (!text.trim()) continue
+          const useBot = action.useBot && botAccount
+          const senderToken = useBot ? botAccount.token : null
+          const senderId = useBot ? botAccount.user?.id : mainUser?.id
+          if (action.type === 'send_chat_response' && action.responseMode === 'announcement') {
+            await sendAnnouncement?.(mainUser?.id, mainUser?.id, text, action.announcementColor ?? 'primary', senderToken ?? undefined)
+          } else if (action.type === 'send_chat_response') {
+            await sendChatMessage?.(mainUser?.id, senderId, text, senderToken ?? undefined)
+          }
+          const actionLabel = action.type === 'send_chat_response' ? (action.responseMode === 'announcement' ? 'send_announcement' : 'send_message') : action.type
+          _mainWindow?.webContents.send('chatTriggers:fired', { triggerId: trigger.id, triggerName: trigger.name, action: actionLabel, text })
         }
-        _mainWindow?.webContents.send('chatTriggers:fired', { triggerId: trigger.id, triggerName: trigger.name, action: action.type, text })
       } catch (err) {
         _mainWindow?.webContents.send('chatTriggers:log', { level: 'error', msg: `Action failed for "${trigger.name}": ${err.message}` })
       }

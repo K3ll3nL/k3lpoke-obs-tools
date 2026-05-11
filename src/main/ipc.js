@@ -1,4 +1,4 @@
-import { ipcMain, app } from 'electron'
+import { ipcMain, app, dialog } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import {
   initTwitch, getTwitchState, setClientId, startOAuthFlow, logout,
@@ -6,7 +6,7 @@ import {
   validateTokenScopes, startBotOAuthFlow, logoutBot as logoutBotAccount,
   sendChatMessage, sendAnnouncement, fetchFollowage as fetchFollowageApi
 } from './twitch.js'
-import { connectOBS, disconnectOBS, isConnected, getSceneList, addBrowserSource, switchScene, getSourceList, getSceneItemList, showDeviceInScene } from './obs.js'
+import { connectOBS, disconnectOBS, isConnected, getSceneList, addBrowserSource, switchScene, getSourceList, getSceneItemList, showDeviceInScene, setSourceVisibility, getCurrentScene, checkChatTriggersPlayer } from './obs.js'
 import {
   getClipsByStatus, getAllClips, getNewClips, setClipStatus, bulkSetStatus, removeClip, reorderQueue,
   upsertClip, clipExists, getChannels, upsertChannel, removeChannel,
@@ -250,9 +250,26 @@ export async function registerIpcHandlers(mainWindow) {
   handle('obs:getStatus', () => ({ connected: isConnected() }))
   handle('obs:getScenes', () => getSceneList())
 
-  handle('obs:addBrowserSource', async ({ sceneName }) => {
-    const url = getOverlayUrl()
-    return addBrowserSource({ sceneName, url })
+  handle('obs:addBrowserSource', async ({ sceneName, url, inputName } = {}) => {
+    const finalUrl = url ?? getOverlayUrl()
+    return addBrowserSource({ sceneName, url: finalUrl, inputName: inputName ?? 'Twitch Clip Queue' })
+  })
+
+  handle('obs:checkChatTriggersPlayer', async (sceneName) => {
+    return checkChatTriggersPlayer(sceneName)
+  })
+
+  handle('obs:setSourceVisibility', async ({ sceneName, sourceName, visible }) => {
+    return setSourceVisibility({ sceneName, sourceName, visible })
+  })
+
+  // ── App utilities ─────────────────────────────────────────────────────────
+  handle('app:openFile', async ({ filters } = {}) => {
+    const r = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openFile'],
+      filters: filters ?? []
+    })
+    return r.canceled ? null : r.filePaths[0]
   })
 
   // ── Player ────────────────────────────────────────────────────────────────
@@ -383,13 +400,18 @@ export async function registerIpcHandlers(mainWindow) {
     const state = getTwitchState()
     const triggers = getChatTriggers().filter(t => t.enabled)
     const bot = getChatBotAccount()
+    const sceneBlacklist = getSetting('sceneBlacklist') ?? {}
     await runTriggers(msg, triggers, {
       sendChatMessage,
       sendAnnouncement,
       fetchFollowage: fetchFollowageApi,
       fetchUserByLogin,
       mainUser: state.user,
-      botAccount: bot
+      botAccount: bot,
+      obsGetSceneItemList: getSceneItemList,
+      obsSetSourceVisibility: setSourceVisibility,
+      getCurrentScene,
+      globalSceneBlacklist: sceneBlacklist,
     })
   })
 

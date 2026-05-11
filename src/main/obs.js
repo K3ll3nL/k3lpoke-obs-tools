@@ -2,6 +2,7 @@ import OBSWebSocket from 'obs-websocket-js'
 
 const obs = new OBSWebSocket()
 let connected = false
+let _currentScene = null
 let statusCallback = null
 let sceneChangedCallback = null
 let sceneListChangedCallback = null
@@ -45,6 +46,7 @@ obs.on('ConnectionError',  () => {
 })
 obs.on('error', () => {})
 obs.on('CurrentProgramSceneChanged', ({ sceneName }) => {
+  _currentScene = sceneName
   try { sceneChangedCallback?.(sceneName) } catch {}
 })
 obs.on('SceneListChanged', () => {
@@ -110,10 +112,14 @@ export function isConnected() {
 
 export async function getSceneList() {
   if (!connected) return { scenes: [], currentScene: null }
-  const res = await obs.call('GetSceneList')
-  return {
-    scenes: res.scenes.map(s => s.sceneName).reverse(),
-    currentScene: res.currentProgramSceneName
+  try {
+    const res = await obs.call('GetSceneList')
+    return {
+      scenes: (Array.isArray(res?.scenes) ? res.scenes : []).map(s => s.sceneName).reverse(),
+      currentScene: res?.currentProgramSceneName ?? null
+    }
+  } catch {
+    return { scenes: [], currentScene: null }
   }
 }
 
@@ -126,7 +132,8 @@ export async function getSourceList() {
   if (!connected) return []
   try {
     const res = await obs.call('GetInputList')
-    return res.inputs.map(i => ({ name: i.inputName, kind: i.inputKind }))
+    if (!Array.isArray(res?.inputs)) return []
+    return res.inputs.map(i => ({ name: i.inputName, kind: i.inputKind })).filter(s => s.name)
   } catch { return [] }
 }
 
@@ -134,12 +141,30 @@ export async function getSceneItemList(sceneName) {
   if (!connected) return []
   try {
     const res = await obs.call('GetSceneItemList', { sceneName })
+    if (!Array.isArray(res?.sceneItems)) return []
     return res.sceneItems.map(i => ({
       sceneItemId:      i.sceneItemId,
       sourceName:       i.sourceName,
       sceneItemEnabled: i.sceneItemEnabled
     }))
   } catch { return [] }
+}
+
+export async function setSourceVisibility({ sceneName, sourceName, visible }) {
+  if (!connected) throw new Error('OBS not connected')
+  const target = sceneName ?? (await obs.call('GetCurrentProgramScene')).currentProgramSceneName
+  const res = await obs.call('GetSceneItemList', { sceneName: target })
+  const item = res.sceneItems.find(i => i.sourceName === sourceName)
+  if (!item) throw new Error(`Source "${sourceName}" not found in scene "${target}"`)
+  await obs.call('SetSceneItemEnabled', {
+    sceneName: target,
+    sceneItemId: item.sceneItemId,
+    sceneItemEnabled: visible
+  })
+}
+
+export function getCurrentScene() {
+  return _currentScene
 }
 
 // Switches to universalScene, then shows only targetSourceName among all known
@@ -203,4 +228,18 @@ export async function addBrowserSource({ sceneName, url, width = 1920, height = 
   }
 
   return { sourceName }
+}
+
+export async function checkChatTriggersPlayer(sceneName) {
+  if (!connected) return { exists: false }
+  try {
+    const items = await getSceneItemList(sceneName)
+    const hasPlayer = items.some(item => {
+      // Check if source name suggests it's the player, or we'd need to check the actual URL
+      return item.sourceName.toLowerCase().includes('chat') && item.sourceName.toLowerCase().includes('player')
+    })
+    return { exists: hasPlayer }
+  } catch {
+    return { exists: false }
+  }
 }
