@@ -2,7 +2,6 @@ import React, { useEffect, useState, useMemo, useRef } from 'react'
 import { Plus, Trash2, Check, X, Layers, ChevronDown, GripVertical } from 'lucide-react'
 import { getEnvelopeVol } from '../components/WaveformEditor'
 import { showUndo, showNotice } from '../lib/undoToast'
-import { generateThumbFromVideo } from '../lib/generateThumb'
 
 const PRESET_COLORS = ['#9146ff', '#0984e3', '#00b894', '#e17055', '#fd79a8', '#fdcb6e']
 
@@ -14,7 +13,6 @@ function duration(secs) {
 
 function ClipCard({ clip, canRemove, onRemove, onDragStart, onDragEnd, collections, selectedId }) {
   const [expanded, setExpanded] = useState(false)
-  const [videoThumb, setVideoThumb] = useState(null)
   const [videoUrl, setVideoUrl] = useState(null)
   const [loadingUrl, setLoadingUrl] = useState(false)
   const [urlError, setUrlError] = useState(null)
@@ -59,7 +57,7 @@ function ClipCard({ clip, canRemove, onRemove, onDragStart, onDragEnd, collectio
       vid.pause()
       vid.currentTime = 0
     }
-  }, [videoUrl, trimStart, trimEnd, clipEnvelope, volume])
+  }, [videoUrl, trimStart, trimEnd, clipEnvelope, volume, expanded])
 
   useEffect(() => {
     if (!expanded) {
@@ -81,21 +79,8 @@ function ClipCard({ clip, canRemove, onRemove, onDragStart, onDragEnd, collectio
       <div className="flex items-center gap-3 p-3 cursor-grab active:cursor-grabbing">
         <GripVertical size={14} className="shrink-0 text-twitch-muted" />
         <div className="relative shrink-0 w-24 h-[54px] rounded overflow-hidden bg-twitch-mid">
-          {(videoThumb || clip.thumbnail_url) && (
-            <img src={videoThumb || clip.thumbnail_url} alt="" className="absolute inset-0 w-full h-full object-cover"
-              onLoad={async e => {
-                const i = e.currentTarget
-                if (i.naturalWidth / i.naturalHeight < 1.6) {
-                  i.remove()
-                  try {
-                    const r = await window.api.clips.getVideoUrl(clip.id)
-                    if (!r.ok) return
-                    const url = await generateThumbFromVideo(r.data)
-                    setVideoThumb(url)
-                    window.api.clips.saveThumbnail(clip.id, url)
-                  } catch {}
-                }
-              }}
+          {clip.thumbnail_url && (
+            <img src={clip.thumbnail_url} alt="" className="absolute inset-0 w-full h-full object-cover"
               onError={e => e.currentTarget.remove()} />
           )}
           {clip.duration != null && (

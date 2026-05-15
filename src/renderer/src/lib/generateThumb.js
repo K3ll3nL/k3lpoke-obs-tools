@@ -4,7 +4,15 @@ export async function generateThumbFromVideo(videoUrl) {
     video.crossOrigin = 'anonymous'
     video.preload = 'metadata'
     video.muted = true
-    const cleanup = () => { video.src = '' }
+    video.volume = 0
+    // Must be in DOM for muted to be respected in Electron/Chromium
+    video.style.cssText = 'position:fixed;opacity:0;width:1px;height:1px;top:-9999px;pointer-events:none;'
+    document.body.appendChild(video)
+    const cleanup = () => {
+      video.pause()
+      video.src = ''
+      video.remove()
+    }
     video.onloadeddata = () => { video.currentTime = Math.min(1, video.duration * 0.1) }
     video.onseeked = () => {
       try {

@@ -168,6 +168,11 @@ export function getAllClips(broadcasterName) {
   if (broadcasterName) {
     const name = broadcasterName.toLowerCase()
     clips = clips.filter(c => c.broadcaster_name?.toLowerCase() === name)
+  } else {
+    const activeNames = new Set(data.channels.map(c => c.name?.toLowerCase()).filter(Boolean))
+    if (activeNames.size > 0) {
+      clips = clips.filter(c => activeNames.has(c.broadcaster_name?.toLowerCase()))
+    }
   }
   return [...clips].sort((a, b) => (b.view_count || 0) - (a.view_count || 0))
 }

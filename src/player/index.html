@@ -69,7 +69,8 @@
       playVideo(decodeURIComponent(params.get('url')));
     }
 
-    connectWS();
+    const isOBS = typeof window.obsstudio !== 'undefined' || /OBS/i.test(navigator.userAgent)
+    if (isOBS) connectWS();
   </script>
 </body>
 </html>

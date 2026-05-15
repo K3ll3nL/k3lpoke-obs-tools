@@ -3,7 +3,7 @@ import { Copy, Monitor, Check, Volume2, Lock, X, Scissors, Activity, Layers, Shu
 import { Link } from 'react-router-dom'
 import TrimBar from './TrimBar'
 import WaveformEditor from './WaveformEditor'
-import { generateThumbFromVideo } from '../lib/generateThumb'
+
 
 function duration(secs) {
   const m = Math.floor(secs / 60)
@@ -35,22 +35,6 @@ export default function RightPanel() {
 
   // Up Next
   const [nextClip, setNextClip] = useState(null)
-  const [npThumb, setNpThumb] = useState(null)
-  const [nextThumb, setNextThumb] = useState(null)
-
-  useEffect(() => {
-    if (!nextClip || nextClip.thumbnail_url?.startsWith('data:')) return
-    let cancelled = false
-    ;(async () => {
-      try {
-        const r = await window.api.clips.getVideoUrl(nextClip.id)
-        if (!r.ok || cancelled) return
-        const url = await generateThumbFromVideo(r.data)
-        if (!cancelled) { setNextThumb(url); window.api.clips.saveThumbnail(nextClip.id, url) }
-      } catch {}
-    })()
-    return () => { cancelled = true }
-  }, [nextClip?.id])
 
   // Collections / playback source
   const [collections, setCollections] = useState([])
@@ -68,7 +52,6 @@ export default function RightPanel() {
 
   function applyClip(clip) {
     setNowPlaying(clip)
-    setNpThumb(null)
     setNpVolume(clip?.volume ?? 1.0)
     if (clip) {
       setTrimStart(clip.trim_start ?? 0)
@@ -94,7 +77,7 @@ export default function RightPanel() {
       if (lockedRef.current) { pendingClip.current = clip } else { applyClip(clip) }
     })
     window.api.player.getNextClip().then(r => { if (r.ok) setNextClip(r.data) })
-    window.api.player.onNextClip(clip => { setNextClip(clip); setNextThumb(null) })
+    window.api.player.onNextClip(clip => { setNextClip(clip) })
     window.api.collections.list().then(r => { if (r.ok) setCollections(r.data) })
     window.api.clips.getQueue().then(r => { if (r.ok) setMainQueueCount(r.data.length) })
     window.api.playback.getConfig().then(r => {
@@ -286,21 +269,8 @@ export default function RightPanel() {
           <div className="space-y-3">
             <div className="flex gap-2.5 items-start">
               <div className="relative shrink-0 w-20 h-[45px] rounded overflow-hidden bg-twitch-mid">
-                {(npThumb || nowPlaying.thumbnail_url) && (
-                  <img src={npThumb || nowPlaying.thumbnail_url} className="w-full h-full object-cover" alt=""
-                    onLoad={async e => {
-                      const i = e.currentTarget
-                      if (i.naturalWidth / i.naturalHeight < 1.6) {
-                        i.remove()
-                        try {
-                          const r = await window.api.clips.getVideoUrl(nowPlaying.id)
-                          if (!r.ok) return
-                          const url = await generateThumbFromVideo(r.data)
-                          setNpThumb(url)
-                          window.api.clips.saveThumbnail(nowPlaying.id, url)
-                        } catch {}
-                      }
-                    }}
+                {nowPlaying.thumbnail_url && (
+                  <img src={nowPlaying.thumbnail_url} className="w-full h-full object-cover" alt=""
                     onError={e => e.currentTarget.remove()} />
                 )}
                 {nowPlaying.duration && (
@@ -422,9 +392,9 @@ export default function RightPanel() {
         {nextClip ? (
           <div className="flex gap-2.5 items-start">
             <div className="relative shrink-0 w-16 h-9 rounded overflow-hidden bg-twitch-surface">
-              {(nextThumb || nextClip.thumbnail_url) && (
+              {nextClip.thumbnail_url && (
                 <img
-                  src={nextThumb || nextClip.thumbnail_url}
+                  src={nextClip.thumbnail_url}
                   className="absolute inset-0 w-full h-full object-cover"
                   alt=""
                   onError={e => e.currentTarget.remove()}

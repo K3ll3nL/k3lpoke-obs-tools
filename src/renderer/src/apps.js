@@ -17,7 +17,7 @@ export const APP_REGISTRY = [
     gradient: 'from-violet-600 to-purple-800',
     defaultRoute: '/updates',
     core: true,
-    version: '1.0.3',
+    version: '1.0.5',
     navItems: [
       { to: '/updates',     icon: Bell,           label: 'Updates'     },
       { to: '/review',      icon: ClipboardCheck, label: 'Review'      },

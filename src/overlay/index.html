@@ -95,6 +95,8 @@
     // Per-collection queues: { [collectionId]: shuffledClips[] }
     let colQueues    = {}
     let colIndices   = {}
+    let recentlyPlayed = new Map() // clipId -> timestamp
+    const RECENTLY_PLAYED_MS = 5 * 60 * 1000
     let playCfg      = { mode: 'single', activeCollectionId: 'main', weightedSets: [], collections: [] }
     let activeSlot   = 0
     let activeClipId = null
@@ -224,6 +226,7 @@
         const prevIndices = { ...colIndices }
         colQueues = {}
         colIndices = {}
+        recentlyPlayed = new Map()
         for (const col of (data.collections || [])) {
           colQueues[col.id]  = biasedShuffle(col.clips || [])
           colIndices[col.id] = prevIndices[col.id] ?? 0
@@ -247,20 +250,6 @@
       }
       const sets = (playCfg.weightedSets || []).filter(s => colQueues[s.collectionId]?.length > 0 && s.weight > 0)
       if (!sets.length) return 'main'
-
-      // If a collection clip is playing, block main queue from interrupting it
-      if (activeCollectionId && activeCollectionId !== 'main') {
-        const setsWithClips = sets.filter(s => s.collectionId !== 'main')
-        if (setsWithClips.length > 0) {
-          const total = setsWithClips.reduce((s, w) => s + w.weight, 0)
-          let rand = Math.random() * total
-          for (const set of setsWithClips) {
-            rand -= set.weight
-            if (rand <= 0) return set.collectionId
-          }
-          return setsWithClips[setsWithClips.length - 1].collectionId
-        }
-      }
 
       const total = sets.reduce((s, w) => s + w.weight, 0)
       let rand = Math.random() * total
@@ -317,14 +306,41 @@
       const effectiveId = colQueues[colId]?.length ? colId : 'main'
       const q = colQueues[effectiveId]
       if (!q || !q.length) return null
+
+      const now = Date.now()
+      for (const [id, ts] of recentlyPlayed) {
+        if (now - ts > RECENTLY_PLAYED_MS) recentlyPlayed.delete(id)
+      }
+
       let clip
       if (!config.playAllBeforeLoop) {
-        clip = weightedRandom(q)
+        const available = q.filter(c => !recentlyPlayed.has(c.id))
+        clip = weightedRandom(available.length ? available : q)
       } else {
         const idx = colIndices[effectiveId] ?? 0
         clip = q[idx % q.length]
         colIndices[effectiveId] = idx + 1
+        if (recentlyPlayed.has(clip.id)) {
+          let searchIdx = idx + 1
+          let found = false
+          for (let i = 0; i < q.length - 1; i++) {
+            const candidate = q[searchIdx % q.length]
+            searchIdx++
+            if (!recentlyPlayed.has(candidate.id)) {
+              clip = candidate
+              colIndices[effectiveId] = searchIdx
+              found = true
+              break
+            }
+          }
+          if (!found) {
+            // All clips recently played — reset and use natural next
+            recentlyPlayed.clear()
+          }
+        }
       }
+
+      recentlyPlayed.set(clip.id, now)
       clip._collectionId = effectiveId
       return clip
     }
@@ -588,21 +604,16 @@
       begin()
     }
 
-    // Only auto-play if NOT in Electron app context
-    // OBS browser sources will play normally; Electron app windows will be muted
-    const isElectron = typeof window !== 'undefined' && (window.process?.type === 'renderer' || window.__ELECTRON_PRELOAD__)
+    // OBS browser sources expose window.obsstudio and include 'OBS' in the UA.
+    // Electron BrowserWindows include 'Electron' in the UA (reliable even with contextIsolation).
+    // Browser tabs get neither — they must not auto-play.
+    const isOBS = typeof window.obsstudio !== 'undefined' || /OBS/i.test(navigator.userAgent)
+    const isElectron = /Electron/i.test(navigator.userAgent)
 
     if (isElectron) {
-      // Mute and don't auto-play in Electron app
-      slots.forEach(s => {
-        s.video.muted = true
-        s.video.pause()
-      })
-      // Don't auto-connect or start playback
-    } else {
-      // In OBS or normal browser - enable full playback
+      slots.forEach(s => { s.video.muted = true; s.video.pause() })
+    } else if (isOBS) {
       connectWS()
-      // Fallback if WS is slow — but only if the source is actually visible
       setTimeout(tryBegin, 1500)
     }
 

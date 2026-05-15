@@ -1,6 +1,5 @@
 import React, { useState } from 'react'
 import { Check, X, Trash2, Play } from 'lucide-react'
-import { generateThumbFromVideo } from '../lib/generateThumb'
 
 function duration(secs) {
   const m = Math.floor(secs / 60)
@@ -9,26 +8,12 @@ function duration(secs) {
 }
 
 export default function ClipCard({ clip, mode = 'review', onApprove, onDeny, onRemove, onPlay, dragging }) {
-  const [videoThumb, setVideoThumb] = useState(null)
   return (
     <div className={`card flex gap-3 p-3 group transition-shadow ${dragging ? 'opacity-50 shadow-lg' : ''}`}>
       {/* Thumbnail */}
       <div className="relative shrink-0 w-32 h-[72px] rounded overflow-hidden bg-twitch-mid">
-        {(videoThumb || clip.thumbnail_url) && (
-          <img src={videoThumb || clip.thumbnail_url} alt={clip.title} className="absolute inset-0 w-full h-full object-cover"
-            onLoad={async e => {
-              const i = e.currentTarget
-              if (i.naturalWidth / i.naturalHeight < 1.6) {
-                i.remove()
-                try {
-                  const r = await window.api.clips.getVideoUrl(clip.id)
-                  if (!r.ok) return
-                  const url = await generateThumbFromVideo(r.data)
-                  setVideoThumb(url)
-                  window.api.clips.saveThumbnail(clip.id, url)
-                } catch {}
-              }
-            }}
+        {clip.thumbnail_url && (
+          <img src={clip.thumbnail_url} alt={clip.title} className="absolute inset-0 w-full h-full object-cover"
             onError={e => e.currentTarget.remove()} />
         )}
         <span className="absolute bottom-1 right-1 bg-black/70 text-white text-[10px] px-1 rounded">
