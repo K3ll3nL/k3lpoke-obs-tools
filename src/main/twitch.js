@@ -119,6 +119,17 @@ async function apiGet(path, params = {}, attempt = 0) {
   }
 }
 
+export async function fetchCurrentStream(userLogin) {
+  try {
+    const data = await apiGet('/streams', { user_login: userLogin })
+    const stream = data.data[0] ?? null
+    if (!stream) return { isLive: false, gameCategory: null, title: null }
+    return { isLive: true, gameCategory: stream.game_name ?? null, title: stream.title ?? null }
+  } catch {
+    return { isLive: false, gameCategory: null, title: null }
+  }
+}
+
 export async function fetchCurrentUser() {
   const data = await apiGet('/users')
   return data.data[0] ?? null
@@ -127,6 +138,16 @@ export async function fetchCurrentUser() {
 export async function fetchUserByLogin(login) {
   const data = await apiGet('/users', { login })
   return data.data[0] ?? null
+}
+
+export async function searchCategories(query) {
+  if (!query || query.length < 2) return []
+  const data = await apiGet('/search/categories', { query, first: 20 })
+  return (data.data ?? []).map(g => ({
+    id: g.id,
+    name: g.name,
+    box_art_url: g.box_art_url?.replace('{width}', '40').replace('{height}', '53') ?? null,
+  }))
 }
 
 export async function searchChannels(query) {

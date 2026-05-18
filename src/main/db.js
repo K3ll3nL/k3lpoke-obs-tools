@@ -482,12 +482,40 @@ export function resolveDeviceShinyScene(deviceId, currentOBSScene) {
 
 // ── Chat Triggers ─────────────────────────────────────────────────────────
 
-export function getChatTriggers() { return [...data.chatTriggers] }
+const DEFAULT_ACTIVATION = () => ({
+  mode: 'manual',
+  logic: 'and',
+  conditions: { whenLive: false, gameCategories: [], titleContains: [] },
+  currentOverride: null,
+})
+
+function _migrateActivation(act) {
+  if (!act) return DEFAULT_ACTIVATION()
+  const conds = act.conditions ?? {}
+  // migrate single-string fields to arrays
+  if (typeof conds.gameCategory === 'string') {
+    conds.gameCategories = conds.gameCategory ? [conds.gameCategory] : []
+    delete conds.gameCategory
+  }
+  conds.gameCategories ??= []
+  if (typeof conds.titleContains === 'string') {
+    conds.titleContains = conds.titleContains ? [conds.titleContains] : []
+  }
+  conds.titleContains ??= []
+  return { ...DEFAULT_ACTIVATION(), ...act, conditions: conds }
+}
+
+export function getChatTriggers() {
+  for (const t of data.chatTriggers) {
+    t.activation = _migrateActivation(t.activation)
+  }
+  return [...data.chatTriggers]
+}
 
 export function createChatTrigger(trigger) {
   const id = `trig_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
   const now = new Date().toISOString()
-  const t = { id, enabled: true, createdAt: now, ...trigger }
+  const t = { id, enabled: true, createdAt: now, activation: DEFAULT_ACTIVATION(), ...trigger }
   data.chatTriggers.push(t)
   save()
   return t

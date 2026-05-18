@@ -4,9 +4,9 @@ import {
   initTwitch, getTwitchState, setClientId, startOAuthFlow, logout,
   fetchUserByLogin, fetchClips, getClipVideoUrl, checkClipsExist, fetchClipDetails, searchChannels as searchTwitchChannels,
   validateTokenScopes, startBotOAuthFlow, logoutBot as logoutBotAccount,
-  sendChatMessage, sendAnnouncement, fetchFollowage as fetchFollowageApi
+  sendChatMessage, sendAnnouncement, fetchFollowage as fetchFollowageApi, fetchCurrentStream, searchCategories,
 } from './twitch.js'
-import { connectOBS, disconnectOBS, isConnected, getSceneList, addBrowserSource, switchScene, getSourceList, getSceneItemList, showDeviceInScene, setSourceVisibility, getCurrentScene, checkChatTriggersPlayer } from './obs.js'
+import { connectOBS, disconnectOBS, isConnected, getSceneList, addBrowserSource, switchScene, getSourceList, getSceneItemList, showDeviceInScene, setSourceVisibility, playVideoInSource, getCurrentScene, checkChatTriggersPlayer, onSceneItemEnableStateChanged } from './obs.js'
 import {
   getClipsByStatus, getAllClips, getNewClips, setClipStatus, bulkSetStatus, removeClip, reorderQueue,
   upsertClip, clipExists, getChannels, upsertChannel, removeChannel,
@@ -24,7 +24,9 @@ import {
 } from './db.js'
 import {
   startChatEngine, stopChatEngine, getChatEngineStatus, setEngineWindow,
-  runTriggers, matchTrigger, onChatMessage
+  runTriggers, matchTrigger, onChatMessage,
+  setEngineOpts, startTimerTriggers, stopTimerTriggers, syncTimerTrigger, handleOBSSourceChange,
+  startStreamPolling, stopStreamPolling, getStreamState,
 } from './chatEngine.js'
 import {
   playClip, stopPlayer, getPlayerState, getNextClipState, broadcastSkipNext,
@@ -245,6 +247,12 @@ export async function registerIpcHandlers(mainWindow) {
     return searchTwitchChannels(query)
   })
 
+  handle('twitch:searchCategories', async ({ query }) => {
+    const state = getTwitchState()
+    if (!state.accessToken) throw new Error('Not authenticated with Twitch')
+    return searchCategories(query)
+  })
+
   // ── OBS ───────────────────────────────────────────────────────────────────
   handle('obs:connect', async ({ host, port, password }) => {
     const result = await connectOBS({ host, port, password })
@@ -410,6 +418,19 @@ export async function registerIpcHandlers(mainWindow) {
 
   setEngineWindow(mainWindow)
 
+  // Set engine opts for timer/OBS triggers (use getters so state is always fresh)
+  setEngineOpts({
+    sendChatMessage,
+    sendAnnouncement,
+    mainUser: () => getTwitchState().user,
+    botAccount: () => getChatBotAccount(),
+    botUsername: () => getChatBotAccount()?.user?.login?.toLowerCase() ?? null,
+    obsGetSceneItemList: getSceneItemList,
+    getChatTriggers,
+    fetchStream: (login) => fetchCurrentStream(login),
+    updateTrigger: (id, changes) => updateChatTrigger(id, changes),
+  })
+
   // Wire up incoming chat messages → trigger runner
   onChatMessage(async (msg) => {
     const state = getTwitchState()
@@ -425,15 +446,41 @@ export async function registerIpcHandlers(mainWindow) {
       botAccount: bot,
       obsGetSceneItemList: getSceneItemList,
       obsSetSourceVisibility: setSourceVisibility,
+      obsPlayVideoInSource: playVideoInSource,
       getCurrentScene,
       globalSceneBlacklist: sceneBlacklist,
     })
   })
 
+  // Wire up OBS source state changes → OBS source triggers
+  onSceneItemEnableStateChanged((data) => handleOBSSourceChange(data))
+
   handle('chatTriggers:list', () => getChatTriggers())
-  handle('chatTriggers:create', (trigger) => createChatTrigger(trigger))
-  handle('chatTriggers:update', ({ id, changes }) => updateChatTrigger(id, changes))
-  handle('chatTriggers:delete', ({ id }) => deleteChatTrigger(id))
+  handle('chatTriggers:create', (trigger) => {
+    const created = createChatTrigger(trigger)
+    syncTimerTrigger(created)
+    return created
+  })
+  handle('chatTriggers:update', ({ id, changes }) => {
+    // When toggling a trigger in auto mode, record a manual override instead of just writing enabled.
+    // Only apply when enabled is actually changing to avoid full-saves from the editor creating spurious overrides.
+    if ('enabled' in changes) {
+      const existing = getChatTriggers().find(t => t.id === id)
+      if (existing?.activation?.mode === 'auto' && changes.enabled !== existing.enabled) {
+        const activation = { ...existing.activation, currentOverride: changes.enabled }
+        const updated = updateChatTrigger(id, { ...changes, activation })
+        if (updated) syncTimerTrigger(updated)
+        return updated
+      }
+    }
+    const updated = updateChatTrigger(id, changes)
+    if (updated) syncTimerTrigger(updated)
+    return updated
+  })
+  handle('chatTriggers:delete', ({ id }) => {
+    syncTimerTrigger({ id, type: 'timer', enabled: false })
+    return deleteChatTrigger(id)
+  })
 
   handle('chatTriggers:getStatus', () => getChatEngineStatus())
 
@@ -441,13 +488,19 @@ export async function registerIpcHandlers(mainWindow) {
     const state = getTwitchState()
     if (!state.user || !state.accessToken) throw new Error('Not authenticated with Twitch')
     startChatEngine(state.user.login, state.accessToken, state.user.login)
+    startTimerTriggers(getChatTriggers().filter(t => t.enabled))
+    startStreamPolling()
     return getChatEngineStatus()
   })
 
   handle('chatTriggers:stop', () => {
+    stopTimerTriggers()
+    stopStreamPolling()
     stopChatEngine()
     return getChatEngineStatus()
   })
+
+  handle('stream:getState', () => getStreamState())
 
   handle('chatTriggers:getScopes', () => validateTokenScopes())
 
@@ -488,7 +541,7 @@ export async function registerIpcHandlers(mainWindow) {
       isVip: false,
       isBroadcaster: false,
     }
-    return triggers.map(t => ({ id: t.id, name: t.name, matches: !!matchTrigger(t, fakeMsg) }))
+    return triggers.map(t => ({ id: t.id, name: t.name, matches: !!matchTrigger({ ...t, enabled: true }, fakeMsg) }))
   })
 
   // Auto-start engine if it was previously running
@@ -496,6 +549,7 @@ export async function registerIpcHandlers(mainWindow) {
     const state = getTwitchState()
     if (state.user && state.accessToken) {
       startChatEngine(state.user.login, state.accessToken, state.user.login)
+      startTimerTriggers(getChatTriggers().filter(t => t.enabled))
     }
   }
 

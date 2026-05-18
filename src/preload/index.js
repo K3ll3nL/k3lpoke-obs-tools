@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('api', {
     fetchClips: (opts) => invoke('twitch:fetchClips', opts),
     fetchAllChannels: () => invoke('twitch:fetchAllChannels'),
     fetchNewClips: () => invoke('twitch:fetchNewClips'),
+    searchCategories: (query) => invoke('twitch:searchCategories', { query }),
     onAuthChanged: (cb) => ipcRenderer.on('twitch:auth-changed', (_, d) => cb(d)),
     onNewClips: (cb) => ipcRenderer.on('twitch:new-clips', (_, d) => cb(d))
   },
@@ -168,10 +169,16 @@ contextBridge.exposeInMainWorld('api', {
 
     testMessage: (text, username)  => invoke('chatTriggers:testMessage', { text, username }),
 
-    onStatus:    (cb) => ipcRenderer.on('chatTriggers:status',    (_, d) => cb(d)),
-    onFired:     (cb) => ipcRenderer.on('chatTriggers:fired',     (_, d) => cb(d)),
-    onLog:       (cb) => ipcRenderer.on('chatTriggers:log',       (_, d) => cb(d)),
-    onMessage:   (cb) => ipcRenderer.on('chatTriggers:message',   (_, d) => cb(d)),
-    onPlayMedia: (cb) => ipcRenderer.on('chatTriggers:playMedia', (_, d) => cb(d)),
+    onStatus:             (cb) => ipcRenderer.on('chatTriggers:status',           (_, d) => cb(d)),
+    onFired:              (cb) => ipcRenderer.on('chatTriggers:fired',            (_, d) => cb(d)),
+    onLog:                (cb) => ipcRenderer.on('chatTriggers:log',              (_, d) => cb(d)),
+    onMessage:            (cb) => ipcRenderer.on('chatTriggers:message',          (_, d) => cb(d)),
+    onPlayMedia:          (cb) => ipcRenderer.on('chatTriggers:playMedia',        (_, d) => cb(d)),
+    onActivationChanged:  (cb) => ipcRenderer.on('chatTriggers:activationChanged',(_, d) => cb(d)),
+
+    stream: {
+      getState: () => invoke('stream:getState'),
+      onStateChanged: (cb) => ipcRenderer.on('stream:stateChanged', (_, d) => cb(d)),
+    },
   }
 })

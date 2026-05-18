@@ -7,6 +7,7 @@ let statusCallback = null
 let sceneChangedCallback = null
 let sceneListChangedCallback = null
 let connectedCallback = null
+let sceneItemEnableStateCallback = null
 
 // Auto-reconnect state
 let retryTimeout = null
@@ -18,6 +19,7 @@ export function onStatusChange(cb) { statusCallback = cb }
 export function onSceneChanged(cb) { sceneChangedCallback = cb }
 export function onSceneListChanged(cb) { sceneListChangedCallback = cb }
 export function onOBSConnected(cb) { connectedCallback = cb }
+export function onSceneItemEnableStateChanged(cb) { sceneItemEnableStateCallback = cb }
 
 function emit(status) {
   connected = status.connected
@@ -51,6 +53,9 @@ obs.on('CurrentProgramSceneChanged', ({ sceneName }) => {
 })
 obs.on('SceneListChanged', () => {
   try { sceneListChangedCallback?.() } catch {}
+})
+obs.on('SceneItemEnableStateChanged', (data) => {
+  try { sceneItemEnableStateCallback?.(data) } catch {}
 })
 
 function scheduleRetry() {
@@ -148,6 +153,18 @@ export async function getSceneItemList(sceneName) {
       sceneItemEnabled: i.sceneItemEnabled
     }))
   } catch { return [] }
+}
+
+export async function playVideoInSource(sourceName, filePath) {
+  if (!connected) throw new Error('OBS not connected')
+  await obs.call('SetInputSettings', {
+    inputName: sourceName,
+    inputSettings: { local_file: filePath, is_local_file: true }
+  })
+  await obs.call('TriggerMediaInputAction', {
+    inputName: sourceName,
+    mediaAction: 'OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART'
+  })
 }
 
 export async function setSourceVisibility({ sceneName, sourceName, visible }) {

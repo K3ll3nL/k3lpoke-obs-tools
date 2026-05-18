@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, Wifi, WifiOff, Loader, Trash2, Edit2, Terminal, MessageSquare, ChevronDown, ChevronUp, Zap } from 'lucide-react'
+import { Plus, Wifi, WifiOff, Loader, Trash2, Edit2, Terminal, MessageSquare, ChevronDown, ChevronUp, Zap, Radio, Clock } from 'lucide-react'
 
 // ── Example cards shown in the empty state ────────────────────────────────────
 
@@ -75,21 +75,69 @@ function EmptyState({ onNew }) {
 
 // ── Trigger card ──────────────────────────────────────────────────────────────
 
-function TriggerCard({ trigger, onEdit, onDelete, onToggle }) {
-  const isCommand = trigger.type === 'command'
-  const firstAction = trigger.actions?.[0]
-  const extraActions = (trigger.actions?.length ?? 1) - 1
+function fmtCooldown(ms) {
+  if (!ms) return null
+  if (ms < 1000) return `${ms}ms`
+  if (ms < 60000) return `${Math.round(ms / 1000)}s`
+  if (ms < 3600000) return `${Math.round(ms / 60000)}m`
+  return `${Math.round(ms / 3600000)}h`
+}
 
-  const matchSummary = isCommand
-    ? `${trigger.command}${(trigger.commandParams ?? []).map(p => p.optional ? ` [${p.name}]` : ` <${p.name}>`).join('')}`
-    : trigger.conditions?.flatMap(g =>
-        (g.matchers ?? []).map(m => {
-          if (m.type === 'user_level') return `user is ${m.userLevel}`
-          if (m.type === 'user_in_list') return 'user in list'
-          const anchor = m.anchorStart && m.anchorEnd ? 'exact' : m.anchorStart ? 'starts with' : m.anchorEnd ? 'ends with' : m.type.replace('_', ' ')
-          return `${anchor} "${m.value}"`
-        })
-      ).slice(0, 2).join(' · ') + (((trigger.conditions ?? []).flatMap(g => g.matchers ?? []).length > 2) ? ' …' : '')
+function stripPattern(pattern) {
+  if (!pattern) return ''
+  return pattern
+    .replace(/@\{choice\|[^|]*\|([^}]*)\}/g, (_, opts) => `[${opts.split('|').filter(Boolean).join('/')}]`)
+    .replace(/@\{capture\|number\|[^}]*\}/g, '[#]')
+    .replace(/@\{capture\|wildcard\|[^}]*\}/g, '[*]')
+    .replace(/@\{capture\|[^}]*\}/g, '[text]')
+    .replace(/@\{optional\|([^}]*)\}/g, (_, w) => `(${w}?)`)
+    .replace(/@\{optional_capture\|number\|([^}]*)\}/g, (_, n) => n ? `(🔢 ${n}?)` : '(🔢?)')
+    .replace(/@\{optional_capture\|[^|]*\|([^}]*)\}/g, (_, n) => n ? `(📝 ${n}?)` : '(📝?)')
+    .replace(/@\{optional_choice\|[^|]*\|([^}]*)\}/g, (_, opts) => `(${opts.split('|').filter(Boolean).join('/')}?)`)
+    .replace(/@\{optional_seq\|([^}]*)\}/g, (_, enc) => { try { return `(${stripPattern(decodeURIComponent(enc))}?)` } catch { return '(seq?)' } })
+    .replace(/@\{seq\|([^|]*)\|([^}]*)\}/g, (_, lbl) => lbl ? `{${lbl}}` : '{sequence}')
+    .replace(/@\{seq\|([^}]*)\}/g, () => '{sequence}')
+    .replace(/@\{anyof\|([^}]*)\}/g, (_, opts) => `[${opts.split('|').filter(Boolean).join('/')}]`)
+    .replace(/@\{minletters\|(\d+)\}/g, (_, n) => `[≥${n} letters]`)
+    .replace(/@\{mindigits\|(\d+)\}/g, (_, n) => `[≥${n} numbers]`)
+    .trim()
+}
+
+function TriggerCard({ trigger, onEdit, onDelete, onToggle }) {
+  const isCommand   = trigger.type === 'command'
+  const isObsSource = trigger.type === 'obs_source'
+  const isTimer     = trigger.type === 'timer'
+  const firstAction  = trigger.responses?.[0]?.actions?.[0]
+  const extraActions = (trigger.responses?.[0]?.actions?.length ?? 1) - 1
+
+  let matchSummary = ''
+  if (isCommand) {
+    matchSummary = `${trigger.command}${(trigger.commandParams ?? []).map(p => p.optional ? ` [${p.name}]` : ` <${p.name}>`).join('')}`
+  } else if (isObsSource) {
+    matchSummary = `${trigger.obsSource || 'any source'} → ${trigger.obsState ?? 'visible'}`
+  } else if (isTimer) {
+    matchSummary = `every ${trigger.interval ?? 15} ${trigger.intervalUnit ?? 'minutes'}`
+  } else {
+    const stripped = stripPattern(trigger.pattern)
+    matchSummary = stripped || ''
+  }
+
+  const badgeCls = isCommand ? 'bg-teal-900/40'
+    : isObsSource ? 'bg-amber-900/30'
+    : isTimer ? 'bg-blue-900/30'
+    : 'bg-purple-900/30'
+
+  const BadgeIcon = isCommand ? Terminal
+    : isObsSource ? Radio
+    : isTimer ? Clock
+    : MessageSquare
+
+  const badgeIconCls = isCommand ? 'text-teal-400'
+    : isObsSource ? 'text-amber-400'
+    : isTimer ? 'text-blue-400'
+    : 'text-purple-400'
+
+  const summaryPrefix = isCommand ? '! ' : isObsSource ? '📡 ' : isTimer ? '⏱ ' : '≈ '
 
   return (
     <div
@@ -100,28 +148,52 @@ function TriggerCard({ trigger, onEdit, onDelete, onToggle }) {
       onClick={() => onEdit(trigger.id)}
     >
       {/* Type badge */}
-      <div className={`mt-0.5 p-1.5 rounded-lg shrink-0 ${isCommand ? 'bg-teal-900/40' : 'bg-purple-900/30'}`}>
-        {isCommand
-          ? <Terminal size={13} className="text-teal-400" />
-          : <MessageSquare size={13} className="text-purple-400" />
-        }
+      <div className={`mt-0.5 p-1.5 rounded-lg shrink-0 ${badgeCls}`}>
+        <BadgeIcon size={13} className={badgeIconCls} />
       </div>
 
       {/* Content */}
       <div className="flex-1 min-w-0 space-y-1.5">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <span className="text-twitch-text text-sm font-medium truncate">{trigger.name}</span>
           {trigger.cooldown > 0 && (
             <span className="shrink-0 text-twitch-muted text-xs px-1.5 py-0.5 bg-twitch-dark rounded border border-twitch-border">
-              {trigger.cooldown}s
+              {fmtCooldown(trigger.cooldown)}
             </span>
+          )}
+          {trigger.activation?.mode === 'auto' && (
+            <span className="shrink-0 text-xs px-1.5 py-0.5 rounded border bg-teal-900/20 border-teal-700/50 text-teal-400">AUTO</span>
+          )}
+          {trigger.activation?.mode === 'auto' && trigger.activation?.currentOverride !== null && (
+            <span className="shrink-0 text-xs px-1.5 py-0.5 rounded border bg-amber-900/20 border-amber-700/50 text-amber-400">OVERRIDE</span>
           )}
         </div>
 
         {/* Match summary */}
         <p className="text-twitch-muted text-xs font-mono truncate">
-          {isCommand ? '!' : '≈ '}{matchSummary || <span className="italic">no conditions</span>}
+          {summaryPrefix}{matchSummary || <span className="italic">no conditions</span>}
         </p>
+
+        {/* Activation condition badges */}
+        {trigger.activation?.mode === 'auto' && (() => {
+          const conds = trigger.activation.conditions ?? {}
+          const badges = []
+          if (conds.whenLive) badges.push({ label: 'Live', color: 'bg-teal-900/30 border-teal-700/50 text-teal-300' })
+          ;(conds.gameCategories ?? []).forEach(g => badges.push({ label: g, color: 'bg-purple-900/30 border-purple-700/50 text-purple-300' }))
+          ;(conds.titleContains ?? []).forEach(t => badges.push({ label: `"${t}"`, color: 'bg-blue-900/30 border-blue-700/50 text-blue-300' }))
+          if (badges.length === 0) return null
+          const logic = trigger.activation.logic ?? 'and'
+          return (
+            <div className="flex flex-wrap items-center gap-1">
+              {badges.map((b, i) => (
+                <React.Fragment key={b.label}>
+                  {i > 0 && <span className="text-twitch-border text-xs">{logic === 'or' ? 'or' : '+'}</span>}
+                  <span className={`text-xs px-1.5 py-0.5 rounded-full border ${b.color}`}>{b.label}</span>
+                </React.Fragment>
+              ))}
+            </div>
+          )
+        })()}
 
         {/* Response preview */}
         {firstAction?.template && (
@@ -263,6 +335,9 @@ export default function ChatTriggerList() {
     window.api.chatTriggers.onStatus(d => setStatus(d))
     window.api.chatTriggers.onFired(d => addLog({ level: 'fire', msg: `"${d.triggerName}" fired → ${d.action === 'send_announcement' ? 'announcement' : 'message'}: ${d.text}` }))
     window.api.chatTriggers.onLog(d => addLog(d))
+    window.api.chatTriggers.onActivationChanged(({ id, enabled }) =>
+      setTriggers(prev => prev.map(t => t.id === id ? { ...t, enabled, activation: { ...t.activation, currentOverride: null } } : t))
+    )
   }, [addLog])
 
   if (loading) return (

@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react'
+import React, { useState, useEffect, useRef, useCallback, forwardRef, useImperativeHandle } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   Plus, X, ArrowLeft, Loader, Info, ChevronDown, ChevronUp,
   Bot, Megaphone, AlertTriangle, Dice6, Music, FileText, Eye,
   Percent, Clock, MessageSquare, Filter, Shuffle, ArrowUp, ArrowDown,
+  Radio, Terminal, Zap,
 } from 'lucide-react'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -41,6 +42,15 @@ function emptyConsideration(type) {
   }
 }
 
+function emptyActivation() {
+  return {
+    mode: 'manual',
+    logic: 'and',
+    conditions: { whenLive: false, gameCategories: [], titleContains: [] },
+    currentOverride: null,
+  }
+}
+
 function emptyTrigger() {
   const respId = uid()
   return {
@@ -52,6 +62,7 @@ function emptyTrigger() {
     routing: [],
     considerations: [],
     cooldown: 0, userCooldown: 0,
+    activation: emptyActivation(),
   }
 }
 
@@ -135,23 +146,14 @@ function Card({ title, children, className = '' }) {
 }
 
 function DurationInput({ value, onChange, preferenceKey }) {
-  const [hrs, setHrs] = useState(0)
-  const [mins, setMins] = useState(0)
-  const [secs, setSecs] = useState(0)
-  const [mils, setMils] = useState(0)
+  const hrs = Math.floor(value / 3600000)
+  const mins = Math.floor((value % 3600000) / 60000)
+  const secs = Math.floor((value % 60000) / 1000)
+  const mils = value % 1000
 
-  useEffect(() => {
-    const total = (hrs || 0) * 3600000 + (mins || 0) * 60000 + (secs || 0) * 1000 + (mils || 0)
-    onChange(total)
-  }, [hrs, mins, secs, mils, onChange])
-
-  useEffect(() => {
-    const h = Math.floor(value / 3600000)
-    const m = Math.floor((value % 3600000) / 60000)
-    const s = Math.floor((value % 60000) / 1000)
-    const ms = value % 1000
-    setHrs(h); setMins(m); setSecs(s); setMils(ms)
-  }, [value])
+  const num = v => v === '' ? 0 : Number(v) || 0
+  const update = (h, m, s, ms) =>
+    onChange((h || 0) * 3600000 + (m || 0) * 60000 + (s || 0) * 1000 + (ms || 0))
 
   // Determine which fields to show based on the highest unit with a value
   const maxUnit = hrs > 0 ? 'hrs' : mins > 0 ? 'mins' : secs > 0 ? 'secs' : 'mils'
@@ -165,7 +167,7 @@ function DurationInput({ value, onChange, preferenceKey }) {
       {showHrs && (
         <div className="flex items-center gap-0.5">
           <input type="number" min={0} value={hrs || ''}
-            onChange={e => setHrs(e.target.value === '' ? 0 : Number(e.target.value) || 0)}
+            onChange={e => update(num(e.target.value), mins, secs, mils)}
             placeholder="0"
             className="w-10 bg-twitch-dark border border-twitch-border rounded px-2 py-1.5 text-twitch-text text-sm focus:outline-none focus:border-teal-600 [&::-webkit-outer-spin-button]:hidden [&::-webkit-inner-spin-button]:hidden" />
           <span className="text-xs text-twitch-muted">h</span>
@@ -174,7 +176,7 @@ function DurationInput({ value, onChange, preferenceKey }) {
       {showMins && (
         <div className="flex items-center gap-0.5">
           <input type="number" min={0} value={mins || ''}
-            onChange={e => setMins(e.target.value === '' ? 0 : Number(e.target.value) || 0)}
+            onChange={e => update(hrs, num(e.target.value), secs, mils)}
             placeholder="0"
             className="w-10 bg-twitch-dark border border-twitch-border rounded px-2 py-1.5 text-twitch-text text-sm focus:outline-none focus:border-teal-600 [&::-webkit-outer-spin-button]:hidden [&::-webkit-inner-spin-button]:hidden" />
           <span className="text-xs text-twitch-muted">m</span>
@@ -183,7 +185,7 @@ function DurationInput({ value, onChange, preferenceKey }) {
       {showSecs && (
         <div className="flex items-center gap-0.5">
           <input type="number" min={0} value={secs || ''}
-            onChange={e => setSecs(e.target.value === '' ? 0 : Number(e.target.value) || 0)}
+            onChange={e => update(hrs, mins, num(e.target.value), mils)}
             placeholder="0"
             className="w-10 bg-twitch-dark border border-twitch-border rounded px-2 py-1.5 text-twitch-text text-sm focus:outline-none focus:border-teal-600 [&::-webkit-outer-spin-button]:hidden [&::-webkit-inner-spin-button]:hidden" />
           <span className="text-xs text-twitch-muted">s</span>
@@ -192,7 +194,7 @@ function DurationInput({ value, onChange, preferenceKey }) {
       {showMils && (
         <div className="flex items-center gap-0.5">
           <input type="number" min={0} value={mils || ''}
-            onChange={e => setMils(e.target.value === '' ? 0 : Number(e.target.value) || 0)}
+            onChange={e => update(hrs, mins, secs, num(e.target.value))}
             placeholder="0"
             className="w-10 bg-twitch-dark border border-twitch-border rounded px-2 py-1.5 text-twitch-text text-sm focus:outline-none focus:border-teal-600 [&::-webkit-outer-spin-button]:hidden [&::-webkit-inner-spin-button]:hidden" />
           <span className="text-xs text-twitch-muted">ms</span>
@@ -219,14 +221,142 @@ const PILL_COLORS = {
   sky:    'bg-sky-900/30 border-sky-700/60 text-sky-400 hover:bg-sky-900/50',
   teal:   'bg-teal-900/30 border-teal-700/60 text-teal-400 hover:bg-teal-900/50',
   violet: 'bg-violet-900/30 border-violet-700/60 text-violet-400 hover:bg-violet-900/50',
+  amber:  'bg-amber-900/30 border-amber-700/60 text-amber-400 hover:bg-amber-900/50',
+  orange: 'bg-orange-900/30 border-orange-700/60 text-orange-400 hover:bg-orange-900/50',
+  rose:   'bg-rose-900/30 border-rose-700/60 text-rose-400 hover:bg-rose-900/50',
 }
 
-function DatapillEditor({ mode, value, onChange, varColors = {} }) {
+function seqPreview(decoded) {
+  return decoded
+    .replace(/@\{capture\|number\|[^}]*\}/g, '🔢')
+    .replace(/@\{capture\|wildcard\|[^}]*\}/g, '✱')
+    .replace(/@\{capture\|[^}]*\}/g, '📝')
+    .replace(/@\{optional_capture\|number\|[^}]*\}/g, '(🔢?)')
+    .replace(/@\{optional_capture\|[^}]*\}/g, '(📝?)')
+    .replace(/@\{choice\|[^|]*\|([^}]*)\}/g, (_, o) => `[${o.split('|').filter(Boolean).join('/')}]`)
+    .replace(/@\{optional_choice\|[^|]*\|([^}]*)\}/g, (_, o) => `([${o.split('|').filter(Boolean).join('/')}]?)`)
+    .replace(/@\{optional\|([^}]*)\}/g, (_, w) => `(${w}?)`)
+    .replace(/@\{anyof\|([^}]*)\}/g, (_, o) => `[${o.split('|').filter(Boolean).join('/')}]`)
+    .replace(/@\{[^}]*\}/g, '…')
+    .trim()
+}
+
+function getPillLabel(content) {
+  const parts = content.split('|')
+  const type = parts[0]
+  if (type === 'seq') { const name = parts.length >= 3 ? parts[1] : ''; return name ? `{ ${name} }` : '{ sequence }' }
+  if (type === 'choice') {
+    const options = parts.slice(2).filter(Boolean)
+      .map(o => { try { return decodeURIComponent(o) } catch { return o } })
+      .map(o => seqPreview(o) || o)
+    return options.length > 0 ? options.join(' / ') : '(empty)'
+  }
+  if (type === 'capture') { const ct = parts[1]; return ct === 'number' ? '🔢' : ct === 'wildcard' ? '❋' : '📝' }
+  if (type === 'optional') return `(${parts.slice(1).join('|') || 'word'}?)`
+  if (type === 'optional_capture') { const ct = parts[1]; const n = parts[2]; const icon = ct === 'number' ? '🔢' : '📝'; return n ? `(${icon} ${n}?)` : `(${icon}?)` }
+  if (type === 'optional_choice') { const opts = parts.slice(2).filter(Boolean); return opts.length > 0 ? `(${opts.join('/')}?)` : '(choose?)' }
+  if (type === 'optional_seq') { try { const p = seqPreview(decodeURIComponent(parts.slice(1).join('|'))); return p ? `(${p}?)` : '(seq?)' } catch { return '(seq?)' } }
+  if (type === 'anyof') { const opts = parts.slice(1).filter(Boolean); return opts.length > 0 ? opts.join(' / ') : 'Any of…' }
+  if (type === 'minletters') return `≥${parts[1] || '1'} letters`
+  if (type === 'mindigits')  return `≥${parts[1] || '1'} numbers`
+  if (type === 'msg_start')  return 'Message start'
+  if (type === 'msg_end')    return 'Message end'
+  return content
+}
+
+function makePillNode(content, colorOverride, onClickFn) {
+  const pillType = content.split('|')[0]
+  const colorKey = colorOverride ?? (
+    pillType === 'capture' ? 'violet'
+    : pillType === 'choice' ? 'teal'
+    : pillType === 'optional' || pillType === 'optional_capture' || pillType === 'optional_choice' || pillType === 'optional_seq' ? 'rose'
+    : pillType === 'seq' ? 'amber'
+    : pillType === 'anyof' ? 'teal'
+    : pillType === 'minletters' || pillType === 'mindigits' ? 'sky'
+    : pillType === 'msg_start' || pillType === 'msg_end' ? 'amber'
+    : 'violet'
+  )
+  const pill = document.createElement('button')
+  pill.type = 'button'
+  pill.className = `datapill inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-medium ${PILL_COLORS[colorKey]} whitespace-nowrap cursor-pointer transition-colors`
+  pill.dataset.content = content
+  pill.contentEditable = 'false'
+  pill.textContent = getPillLabel(content)
+  if (onClickFn) { pill.title = 'Click to edit'; pill.onclick = onClickFn }
+  return pill
+}
+
+const DatapillEditor = forwardRef(function DatapillEditor({ mode, value, onChange, varColors = {}, onEnter, onBackspaceAtStart, onArrowUp, onArrowDown, onFocus, inputClassName }, ref) {
   const editorRef = useRef(null)
   const [deleteMode, setDeleteMode] = useState(null)
   const [selectedPillId, setSelectedPillId] = useState(null)
   const [pillMenuPos, setPillMenuPos] = useState(null)
   const isUpdatingRef = useRef(false)
+  const savedRangeRef = useRef(null)
+  const pendingCursorRef = useRef(null)
+  const lastBackspaceRef = useRef(false)
+
+  const getInsertOffset = (range) => {
+    const editor = editorRef.current
+    if (!editor || !range) return null
+    let offset = 0
+    for (let i = 0; i < editor.childNodes.length; i++) {
+      const node = editor.childNodes[i]
+      if (range.startContainer === editor && range.startOffset === i) break
+      if (range.startContainer === node) { offset += range.startOffset; break }
+      if (node.nodeType === Node.TEXT_NODE) {
+        offset += node.textContent.length
+      } else if (node.classList?.contains('datapill')) {
+        offset += `@{${node.dataset.content}}`.length
+      }
+    }
+    return offset
+  }
+
+  const positionCursorAtOffset = (targetOffset) => {
+    const editor = editorRef.current
+    if (!editor) return
+    let offset = 0
+    const sel = window.getSelection()
+    const range = document.createRange()
+    for (const node of editor.childNodes) {
+      const nodeLen = node.nodeType === Node.TEXT_NODE
+        ? node.textContent.length
+        : node.classList?.contains('datapill') ? `@{${node.dataset.content}}`.length : 0
+      if (offset + nodeLen >= targetOffset) {
+        if (node.nodeType === Node.TEXT_NODE) {
+          range.setStart(node, targetOffset - offset)
+        } else {
+          range.setStartAfter(node)
+        }
+        range.collapse(true)
+        sel.removeAllRanges()
+        sel.addRange(range)
+        editor.focus()
+        return
+      }
+      offset += nodeLen
+    }
+    range.selectNodeContents(editor)
+    range.collapse(false)
+    sel.removeAllRanges()
+    sel.addRange(range)
+    editor.focus()
+  }
+
+  useImperativeHandle(ref, () => ({
+    insertAtCursor(pillText) {
+      const offset = getInsertOffset(savedRangeRef.current)
+      const current = value || ''
+      const newValue = offset !== null
+        ? current.slice(0, offset) + pillText + current.slice(offset)
+        : current + (current ? ' ' : '') + pillText
+      pendingCursorRef.current = offset !== null ? offset + pillText.length : newValue.length
+      savedRangeRef.current = null
+      onChange(newValue)
+    },
+    focus() { editorRef.current?.focus() },
+  }), [value, onChange])
 
   const updateValue = (newValue) => {
     onChange(newValue)
@@ -250,20 +380,6 @@ function DatapillEditor({ mode, value, onChange, varColors = {} }) {
     return result
   }
 
-  const getPillLabel = (content) => {
-    const parts = content.split('|')
-    const type = parts[0]
-    if (type === 'choice') {
-      const options = parts.slice(2).filter(Boolean)
-      return options.length > 0 ? options.join(' / ') : '(empty)'
-    }
-    if (type === 'capture') {
-      const captureType = parts[1]
-      return captureType === 'number' ? '🔢' : captureType === 'wildcard' ? '❋' : '📝'
-    }
-    return content
-  }
-
   const handlePillClick = (pillEl, content) => {
     setSelectedPillId(content)
     const rect = pillEl.getBoundingClientRect()
@@ -284,19 +400,9 @@ function DatapillEditor({ mode, value, onChange, varColors = {} }) {
         const end = v.indexOf('}', i + 2)
         if (end === -1) { fragment.appendChild(document.createTextNode(v.slice(i))); break }
         const content = v.slice(i + 2, end)
-        const pillType = content.split('|')[0]
-        const colorKey = pillType === 'capture' ? 'violet'
-          : pillType === 'choice' ? 'teal'
-          : varColors[content] ?? 'violet'
-        const pillColor = PILL_COLORS[colorKey]
-        const pill = document.createElement('button')
-        pill.type = 'button'
-        pill.className = `datapill inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-medium ${pillColor} whitespace-nowrap cursor-pointer transition-colors`
-        pill.dataset.content = content
-        pill.contentEditable = 'false'
-        pill.textContent = getPillLabel(content)
-        pill.title = 'Click to edit'
-        pill.onclick = (e) => { e.preventDefault(); e.stopPropagation(); handlePillClick(pill, content) }
+        const colorOverride = varColors[content] ?? null
+        const pill = makePillNode(content, colorOverride,
+          (e) => { e.preventDefault(); e.stopPropagation(); handlePillClick(pill, content) })
         fragment.appendChild(pill)
         i = end + 1
       } else {
@@ -317,22 +423,69 @@ function DatapillEditor({ mode, value, onChange, varColors = {} }) {
     setPillMenuPos(null)
   }
 
-  useEffect(() => { syncDOMFromValue() }, [value])
+  useEffect(() => {
+    syncDOMFromValue()
+    if (pendingCursorRef.current !== null) {
+      positionCursorAtOffset(pendingCursorRef.current)
+      pendingCursorRef.current = null
+    }
+  }, [value])
 
   const handleInput = () => updateValue(serializeDOM())
 
+  const handleBlur = () => {
+    const sel = window.getSelection()
+    if (sel && sel.rangeCount > 0 && editorRef.current?.contains(sel.getRangeAt(0).startContainer)) {
+      savedRangeRef.current = sel.getRangeAt(0).cloneRange()
+    }
+  }
+
+  const closePillMenu = () => { setSelectedPillId(null); setPillMenuPos(null) }
+
+  useEffect(() => {
+    if (!selectedPillId) return
+    window.addEventListener('scroll', closePillMenu, true)
+    return () => window.removeEventListener('scroll', closePillMenu, true)
+  }, [selectedPillId])
+
   const handleKeyDown = (e) => {
+    if (selectedPillId !== null && !['Shift', 'Control', 'Alt', 'Meta'].includes(e.key)) {
+      closePillMenu()
+      if (e.key === 'Escape' || e.key === 'Enter') { e.preventDefault(); return }
+    }
+    if (e.key === 'ArrowUp' && onArrowUp) { e.preventDefault(); onArrowUp(); return }
+    if (e.key === 'ArrowDown' && onArrowDown) { e.preventDefault(); onArrowDown(); return }
+    if (e.key === 'Enter' && onEnter) {
+      e.preventDefault()
+      const sel = window.getSelection()
+      const offset = sel?.rangeCount ? getInsertOffset(sel.getRangeAt(0)) : null
+      const cur = value || ''
+      onEnter(cur.slice(0, offset ?? cur.length), cur.slice(offset ?? cur.length))
+      return
+    }
+    if (e.key === 'Backspace' && onBackspaceAtStart && !value) {
+      e.preventDefault()
+      onBackspaceAtStart()
+      return
+    }
     if (e.key === 'Backspace') {
       const sel = window.getSelection()
       if (!sel.rangeCount) return
       const range = sel.getRangeAt(0)
-      const prevNode = range.startOffset === 0 ? range.startContainer.previousSibling : null
+      const editor = editorRef.current
+      let prevNode = null
+      if (range.startContainer === editor) {
+        if (range.startOffset > 0) prevNode = editor.childNodes[range.startOffset - 1]
+      } else if (range.startOffset === 0) {
+        prevNode = range.startContainer.previousSibling
+      }
       const isAfterPill = prevNode?.classList?.contains('datapill')
       if (isAfterPill) {
         e.preventDefault()
         const pill = prevNode
         const pillContent = pill.dataset.content
-        if (deleteMode === pillContent) {
+        // Delete immediately unless mid-sequence backspace arriving at a new pill
+        if (!lastBackspaceRef.current || deleteMode === pillContent) {
           pill.remove(); handleInput(); setDeleteMode(null)
         } else {
           setDeleteMode(pillContent)
@@ -344,11 +497,15 @@ function DatapillEditor({ mode, value, onChange, varColors = {} }) {
           p.classList.remove('bg-red-900/40', 'border-red-700/60', 'text-red-400')
         })
       }
-    } else if (!['Shift','Control','Alt','Meta'].includes(e.key) && deleteMode) {
-      setDeleteMode(null)
-      editorRef.current?.querySelectorAll('.datapill.bg-red-900\\/40')?.forEach(p => {
-        p.classList.remove('bg-red-900/40', 'border-red-700/60', 'text-red-400')
-      })
+      lastBackspaceRef.current = true
+    } else if (!['Shift','Control','Alt','Meta'].includes(e.key)) {
+      lastBackspaceRef.current = false
+      if (deleteMode) {
+        setDeleteMode(null)
+        editorRef.current?.querySelectorAll('.datapill.bg-red-900\\/40')?.forEach(p => {
+          p.classList.remove('bg-red-900/40', 'border-red-700/60', 'text-red-400')
+        })
+      }
     }
   }
 
@@ -356,8 +513,8 @@ function DatapillEditor({ mode, value, onChange, varColors = {} }) {
     <div className="space-y-2">
       <div className="relative">
         <div ref={editorRef} contentEditable suppressContentEditableWarning
-          onInput={handleInput} onKeyDown={handleKeyDown} spellCheck="false"
-          className="p-3 bg-twitch-dark border border-twitch-border rounded-lg min-h-12 cursor-text focus:outline-none focus:ring-1 focus:ring-teal-600 text-twitch-text break-words" />
+          onInput={handleInput} onKeyDown={handleKeyDown} onBlur={handleBlur} onFocus={onFocus} spellCheck="false"
+          className={inputClassName ?? 'p-3 bg-twitch-dark border border-twitch-border rounded-lg min-h-12 cursor-text focus:outline-none focus:ring-1 focus:ring-teal-600 text-twitch-text break-words'} />
         {!value && (
           <div className="absolute top-3 left-1/2 -translate-x-1/2 pointer-events-none text-twitch-muted text-xs select-none">
             Build here...
@@ -376,25 +533,211 @@ function DatapillEditor({ mode, value, onChange, varColors = {} }) {
       )}
     </div>
   )
-}
+})
+
+const CHOICE_OPTION_PILLS = [
+  { label: 'Word',             pill: '@{capture|text|}',                      color: 'violet' },
+  { label: 'Number',           pill: '@{capture|number|}',                    color: 'violet' },
+  { label: 'Wildcard',         pill: '@{capture|wildcard|}',                  color: 'violet' },
+  { label: 'Choice',           pill: '@{choice||option1|option2}',            color: 'teal'   },
+  { label: 'Optional word',    pill: '@{optional|word}',                      color: 'rose'   },
+  { label: 'Optional capture', pill: '@{optional_capture|text|}',             color: 'rose'   },
+  { label: 'Optional number',  pill: '@{optional_capture|number|}',           color: 'rose'   },
+  { label: 'Optional choice',  pill: '@{optional_choice||option1|option2}',   color: 'rose'   },
+  { label: 'Any of',           pill: '@{anyof|option1|option2}',              color: 'teal'   },
+  { label: 'Min letters',      pill: '@{minletters|3}',                       color: 'sky'    },
+  { label: 'Min numbers',      pill: '@{mindigits|1}',                        color: 'sky'    },
+  { label: 'Message start',    pill: '@{msg_start}',                        color: 'amber'    },
+  { label: 'Message end',      pill: '@{msg_end}',                        color: 'amber'    },
+]
+
+const ChoiceEditor = forwardRef(function ChoiceEditor({ options, onChange }, ref) {
+  const editorRef = useRef(null)
+  const isUpdatingRef = useRef(false)
+  const savedRangeRef = useRef(null)
+  const lastBackspaceRef = useRef(false)
+  const [deleteMode, setDeleteMode] = useState(null)
+
+  const serializeDOM = () => {
+    const editor = editorRef.current
+    if (!editor) return ['']
+    const lines = [[]]
+    for (const node of editor.childNodes) {
+      if (node.nodeName === 'BR') { lines.push([]) }
+      else if (node.nodeType === Node.TEXT_NODE) { lines[lines.length - 1].push(node.textContent) }
+      else if (node.classList?.contains('datapill')) { lines[lines.length - 1].push(`@{${node.dataset.content}}`) }
+    }
+    const result = lines.map(l => l.join(''))
+    while (result.length > 1 && result[result.length - 1] === '') result.pop()
+    return result.length ? result : ['']
+  }
+
+  const syncDOM = () => {
+    const editor = editorRef.current
+    if (!editor || isUpdatingRef.current) return
+    isUpdatingRef.current = true
+    const opts = options?.length ? options : ['']
+    if (JSON.stringify(serializeDOM()) === JSON.stringify(opts)) { isUpdatingRef.current = false; return }
+    const frag = document.createDocumentFragment()
+    opts.forEach((opt, idx) => {
+      if (idx > 0) frag.appendChild(document.createElement('br'))
+      let i = 0
+      while (i < opt.length) {
+        if (opt.slice(i, i + 2) === '@{') {
+          const end = opt.indexOf('}', i + 2)
+          if (end === -1) { frag.appendChild(document.createTextNode(opt.slice(i))); break }
+          frag.appendChild(makePillNode(opt.slice(i + 2, end)))
+          i = end + 1
+        } else {
+          let end = i
+          while (end < opt.length && opt.slice(end, end + 2) !== '@{') end++
+          frag.appendChild(document.createTextNode(opt.slice(i, end)))
+          i = end
+        }
+      }
+    })
+    editor.innerHTML = ''
+    editor.appendChild(frag)
+    isUpdatingRef.current = false
+  }
+
+  useEffect(() => { syncDOM() }, [options])
+
+  const handleInput = () => { if (!isUpdatingRef.current) onChange(serializeDOM()) }
+
+  const handleBlur = () => {
+    const sel = window.getSelection()
+    if (sel?.rangeCount > 0 && editorRef.current?.contains(sel.getRangeAt(0).startContainer))
+      savedRangeRef.current = sel.getRangeAt(0).cloneRange()
+  }
+
+  const clearDeleteMode = () => {
+    setDeleteMode(null)
+    editorRef.current?.querySelectorAll('.datapill.bg-red-900\\/40')?.forEach(p =>
+      p.classList.remove('bg-red-900/40', 'border-red-700/60', 'text-red-400'))
+  }
+
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      const sel = window.getSelection()
+      if (sel?.rangeCount) {
+        const range = sel.getRangeAt(0)
+        range.deleteContents()
+        const br = document.createElement('br')
+        range.insertNode(br)
+        range.setStartAfter(br)
+        range.collapse(true)
+        sel.removeAllRanges()
+        sel.addRange(range)
+        handleInput()
+      }
+      return
+    }
+    if (e.key === 'Backspace') {
+      const sel = window.getSelection()
+      if (!sel?.rangeCount) return
+      const range = sel.getRangeAt(0)
+      const editor = editorRef.current
+      let prevNode = null
+      if (range.startContainer === editor) {
+        if (range.startOffset > 0) prevNode = editor.childNodes[range.startOffset - 1]
+      } else if (range.startOffset === 0) {
+        prevNode = range.startContainer.previousSibling
+      }
+      if (prevNode?.classList?.contains('datapill')) {
+        e.preventDefault()
+        const pillContent = prevNode.dataset.content
+        if (!lastBackspaceRef.current || deleteMode === pillContent) {
+          prevNode.remove(); handleInput(); setDeleteMode(null)
+        } else {
+          setDeleteMode(pillContent)
+          prevNode.classList.add('bg-red-900/40', 'border-red-700/60', 'text-red-400')
+        }
+      } else if (deleteMode) { clearDeleteMode() }
+      lastBackspaceRef.current = true
+    } else if (!['Shift', 'Control', 'Alt', 'Meta'].includes(e.key)) {
+      lastBackspaceRef.current = false
+      if (deleteMode) clearDeleteMode()
+    }
+  }
+
+  useImperativeHandle(ref, () => ({
+    insertAtCursor(pillText) {
+      const editor = editorRef.current
+      if (!editor) return
+      const sel = window.getSelection()
+      const saved = savedRangeRef.current
+      const range = saved && editor.contains(saved.startContainer)
+        ? saved.cloneRange()
+        : (() => { const r = document.createRange(); r.selectNodeContents(editor); r.collapse(false); return r })()
+      const content = pillText.replace(/^@\{/, '').replace(/\}$/, '')
+      const pill = makePillNode(content)
+      range.deleteContents()
+      range.insertNode(pill)
+      range.setStartAfter(pill)
+      range.collapse(true)
+      sel.removeAllRanges()
+      sel.addRange(range)
+      editor.focus()
+      handleInput()
+      savedRangeRef.current = null
+    }
+  }), [onChange])
+
+  return (
+    <div ref={editorRef} contentEditable suppressContentEditableWarning
+      onInput={handleInput} onKeyDown={handleKeyDown} onBlur={handleBlur} spellCheck="false"
+      className="w-full text-xs bg-twitch-surface border border-twitch-border rounded px-2 py-1 text-twitch-text focus:outline-none focus:ring-1 focus:ring-teal-600 min-h-10 cursor-text break-words leading-6" />
+  )
+})
 
 function PillEditMenu({ content, mode, pos, onCommit, onClose }) {
   const [draft, setDraft] = useState(content)
   const parts = draft.split('|')
   const type = parts[0]
 
+  const choiceEditorRef = useRef(null)
+  const [insertMenuOpen, setInsertMenuOpen] = useState(false)
+  const insertMenuRef = useRef(null)
+
+  useEffect(() => {
+    if (!insertMenuOpen) return
+    const close = (e) => { if (!insertMenuRef.current?.contains(e.target)) setInsertMenuOpen(false) }
+    document.addEventListener('mousedown', close)
+    return () => document.removeEventListener('mousedown', close)
+  }, [insertMenuOpen])
+
   function commit() { onCommit(draft); onClose() }
 
   return (
-    <div className="fixed bg-twitch-dark border border-twitch-border rounded shadow-lg z-50 min-w-48 p-2 space-y-2"
+    <div className={`fixed bg-twitch-dark border border-twitch-border rounded shadow-lg z-50 p-2 space-y-2 ${type === 'choice' ? 'w-80' : 'min-w-48'}`}
       style={{ top: `${pos.top}px`, left: `${pos.left}px` }}>
       {type === 'choice' && (
         <>
-          <div className="space-y-1">
+          <div className="space-y-1.5">
             <label className="text-xs text-twitch-muted block">Options:</label>
-            <textarea value={parts.slice(2).join('\n')}
-              onChange={e => setDraft(`choice|${parts[1]}|${e.target.value.split('\n').join('|')}`)}
-              rows={2} className="w-full text-xs bg-twitch-surface border border-twitch-border rounded px-2 py-1 text-twitch-text resize-none" />
+            <ChoiceEditor
+              ref={choiceEditorRef}
+              options={parts.slice(2).map(enc => { try { return decodeURIComponent(enc) } catch { return enc } })}
+              onChange={opts => setDraft(`choice|${parts[1]}|${opts.map(encodeURIComponent).join('|')}`)}
+            />
+            <div className="relative" ref={insertMenuRef}>
+              <button type="button" onClick={() => setInsertMenuOpen(o => !o)}
+                className="flex items-center gap-0.5 text-xs text-twitch-muted hover:text-twitch-text px-1.5 py-0.5 rounded border border-twitch-border/60 hover:border-twitch-muted transition-colors">
+                Insert <ChevronDown size={10} />
+              </button>
+              {insertMenuOpen && (
+                <div className="absolute top-full left-0 mt-1 z-[60] bg-twitch-dark border border-twitch-border rounded shadow-lg py-1 min-w-36">
+                  {CHOICE_OPTION_PILLS.map(({ label, pill, color }) => (
+                    <button key={label} type="button" onClick={() => { choiceEditorRef.current?.insertAtCursor(pill); setInsertMenuOpen(false) }}
+                      className={`w-full text-left text-xs px-2.5 py-1 hover:bg-twitch-mid transition-colors ${PILL_COLORS[color].split(' ').find(c => c.startsWith('text-'))}`}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
           {mode === 'pattern' && (
             <div>
@@ -425,6 +768,113 @@ function PillEditMenu({ content, mode, pos, onCommit, onClose }) {
           )}
         </>
       )}
+      {type === 'optional' && (
+        <div className="space-y-1">
+          <label className="text-xs text-twitch-muted block">Optional word/phrase:</label>
+          <input value={parts.slice(1).join('|')} onChange={e => setDraft(`optional|${e.target.value}`)}
+            placeholder="e.g. please" className="w-full text-xs bg-twitch-surface border border-twitch-border rounded px-2 py-1 text-twitch-text" />
+        </div>
+      )}
+      {type === 'anyof' && (
+        <div className="space-y-1">
+          <label className="text-xs text-twitch-muted block">Words (one per line — matches any):</label>
+          <textarea value={parts.slice(1).join('\n')}
+            onChange={e => setDraft(`anyof|${e.target.value.split('\n').filter(Boolean).join('|')}`)}
+            rows={3} className="w-full text-xs bg-twitch-surface border border-twitch-border rounded px-2 py-1 text-twitch-text resize-none" />
+        </div>
+      )}
+      {type === 'minletters' && (
+        <div className="space-y-1">
+          <label className="text-xs text-twitch-muted block">Minimum letters in message:</label>
+          <input type="number" min={1} value={parts[1] || '1'} onChange={e => setDraft(`minletters|${e.target.value}`)}
+            className="w-full text-xs bg-twitch-surface border border-twitch-border rounded px-2 py-1 text-twitch-text" />
+        </div>
+      )}
+      {type === 'mindigits' && (
+        <div className="space-y-1">
+          <label className="text-xs text-twitch-muted block">Minimum digits in message:</label>
+          <input type="number" min={1} value={parts[1] || '1'} onChange={e => setDraft(`mindigits|${e.target.value}`)}
+            className="w-full text-xs bg-twitch-surface border border-twitch-border rounded px-2 py-1 text-twitch-text" />
+        </div>
+      )}
+      {type === 'optional_capture' && (
+        <div className="space-y-2">
+          <div className="space-y-1">
+            <label className="text-xs text-twitch-muted block">Capture type:</label>
+            <select value={parts[1] || 'text'} onChange={e => setDraft(`optional_capture|${e.target.value}|${parts[2] || ''}`)}
+              className="w-full text-xs bg-twitch-surface border border-twitch-border rounded px-2 py-1 text-twitch-text">
+              <option value="text">Text (word)</option>
+              <option value="number">Number</option>
+            </select>
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs text-twitch-muted block">Variable name:</label>
+            <input value={parts[2] || ''} onChange={e => setDraft(`optional_capture|${parts[1] || 'text'}|${e.target.value}`)}
+              placeholder="e.g. item" className="w-full text-xs bg-twitch-surface border border-twitch-border rounded px-2 py-1 text-twitch-text" />
+          </div>
+        </div>
+      )}
+      {type === 'optional_seq' && (() => {
+        let decoded = ''
+        try { decoded = decodeURIComponent(parts.slice(1).join('|')) } catch {}
+        return (
+          <div className="space-y-2">
+            <label className="text-xs text-twitch-muted block">Sequence:</label>
+            <DatapillEditor mode="pattern" value={decoded}
+              onChange={v => setDraft(`optional_seq|${encodeURIComponent(v)}`)} />
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className="text-twitch-muted text-xs">Insert:</span>
+              <button onClick={() => { let d = ''; try { d = decodeURIComponent(parts.slice(1).join('|')) } catch {} setDraft(`optional_seq|${encodeURIComponent(d + (d ? ' ' : '') + '@{choice||option1|option2}')}`) }} className={`text-xs px-1.5 py-0.5 rounded border ${PILL_COLORS.teal}`}>Choice</button>
+              <button onClick={() => { let d = ''; try { d = decodeURIComponent(parts.slice(1).join('|')) } catch {} setDraft(`optional_seq|${encodeURIComponent(d + (d ? ' ' : '') + '@{capture|text|}')}`) }} className={`text-xs px-1.5 py-0.5 rounded border ${PILL_COLORS.violet}`}>Word</button>
+              <button onClick={() => { let d = ''; try { d = decodeURIComponent(parts.slice(1).join('|')) } catch {} setDraft(`optional_seq|${encodeURIComponent(d + (d ? ' ' : '') + '@{capture|number|}')}`) }} className={`text-xs px-1.5 py-0.5 rounded border ${PILL_COLORS.violet}`}>Number</button>
+            </div>
+          </div>
+        )
+      })()}
+      {type === 'seq' && (() => {
+        const seqLabel = parts.length >= 3 ? parts[1] : ''
+        const encodedPart = parts.length >= 3 ? parts[2] : (parts[1] || '')
+        let decoded = ''
+        try { decoded = decodeURIComponent(encodedPart) } catch {}
+        const rebuild = (newLabel, newDecoded) => setDraft(`seq|${newLabel}|${encodeURIComponent(newDecoded)}`)
+        const appSeq = (raw) => rebuild(seqLabel, decoded + (decoded ? ' ' : '') + raw)
+        return (
+          <div className="space-y-2">
+            <div className="space-y-1">
+              <label className="text-xs text-twitch-muted block">Label:</label>
+              <input value={seqLabel} onChange={e => rebuild(e.target.value, decoded)} placeholder="e.g. location"
+                className="w-full text-xs bg-twitch-surface border border-twitch-border rounded px-2 py-1 text-twitch-text focus:outline-none focus:border-teal-600" />
+            </div>
+            <label className="text-xs text-twitch-muted block">Sequence:</label>
+            <DatapillEditor mode="pattern" value={decoded} onChange={v => rebuild(seqLabel, v)} />
+            <div className="flex flex-wrap gap-1">
+              <button onClick={() => appSeq('@{choice||option1|option2}')}   className={`text-xs px-1.5 py-0.5 rounded border ${PILL_COLORS.teal}`}>Choice</button>
+              <button onClick={() => appSeq('@{capture|text|}')}             className={`text-xs px-1.5 py-0.5 rounded border ${PILL_COLORS.violet}`}>Word</button>
+              <button onClick={() => appSeq('@{capture|number|}')}           className={`text-xs px-1.5 py-0.5 rounded border ${PILL_COLORS.violet}`}>Number</button>
+              <button onClick={() => appSeq('@{capture|wildcard|}')}         className={`text-xs px-1.5 py-0.5 rounded border ${PILL_COLORS.violet}`}>Wildcard</button>
+              <button onClick={() => appSeq('@{optional|word}')}             className={`text-xs px-1.5 py-0.5 rounded border ${PILL_COLORS.rose}`}>Optional</button>
+              <button onClick={() => appSeq('@{anyof|option1|option2}')}     className={`text-xs px-1.5 py-0.5 rounded border ${PILL_COLORS.teal}`}>Any of</button>
+              <button onClick={() => appSeq('@{minletters|3}')}              className={`text-xs px-1.5 py-0.5 rounded border ${PILL_COLORS.sky}`}>Min letters</button>
+              <button onClick={() => appSeq('@{mindigits|1}')}               className={`text-xs px-1.5 py-0.5 rounded border ${PILL_COLORS.sky}`}>Min numbers</button>
+            </div>
+          </div>
+        )
+      })()}
+      {type === 'optional_choice' && (
+        <div className="space-y-2">
+          <div className="space-y-1">
+            <label className="text-xs text-twitch-muted block">Options:</label>
+            <textarea value={parts.slice(2).join('\n')}
+              onChange={e => setDraft(`optional_choice|${parts[1] || ''}|${e.target.value.split('\n').join('|')}`)}
+              rows={3} className="w-full text-xs bg-twitch-surface border border-twitch-border rounded px-2 py-1 text-twitch-text resize-none" />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs text-twitch-muted block">Variable name (optional):</label>
+            <input value={parts[1] || ''} onChange={e => setDraft(`optional_choice|${e.target.value}|${parts.slice(2).join('|')}`)}
+              placeholder="e.g. location" className="w-full text-xs bg-twitch-surface border border-twitch-border rounded px-2 py-1 text-twitch-text" />
+          </div>
+        </div>
+      )}
       <button onClick={commit}
         className="w-full text-xs px-2 py-1 rounded border border-twitch-border text-twitch-muted hover:text-twitch-text text-center">
         Done
@@ -435,32 +885,124 @@ function PillEditMenu({ content, mode, pos, onCommit, onClose }) {
 
 // ── PatternEditor ─────────────────────────────────────────────────────────────
 
+// ── PatternPillModal ──────────────────────────────────────────────────────────
+
+function PatternPillModal({ onInsert, onClose }) {
+  const [subPattern, setSubPattern] = useState('')
+  const [label, setLabel] = useState('')
+  const editorRef = useRef(null)
+
+  function append(raw) {
+    editorRef.current?.insertAtCursor(`@{${raw}}`)
+  }
+
+  function handleInsert() {
+    if (subPattern.trim()) onInsert(`@{seq|${label.trim()}|${encodeURIComponent(subPattern)}}`)
+    onClose()
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>
+      <div className="bg-twitch-mid border border-twitch-border rounded-xl shadow-2xl w-full max-w-md flex flex-col max-h-[85vh]" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-4 py-3 border-b border-twitch-border shrink-0">
+          <h2 className="text-twitch-text text-sm font-semibold">Build advanced sequence</h2>
+          <button onClick={onClose} className="text-twitch-muted hover:text-twitch-text transition-colors"><X size={14} /></button>
+        </div>
+
+        <div className="overflow-y-auto p-4 space-y-4 flex-1">
+          <p className="text-twitch-muted text-xs">Compose a sequence of pills and text. Click a pill type to append it, then click any pill in the editor to configure it.</p>
+
+          <DatapillEditor ref={editorRef} mode="pattern" value={subPattern} onChange={setSubPattern} />
+
+          <div className="space-y-3">
+            <div className="space-y-1.5">
+              <p className="text-twitch-muted text-xs font-medium uppercase tracking-wider">Captures &amp; choices</p>
+              <div className="flex flex-wrap gap-1.5">
+                <button onClick={() => append('choice||option1|option2')} className={`text-xs px-2 py-1 rounded border ${PILL_COLORS.teal}`}>Choice</button>
+                <button onClick={() => append('capture|text|')}           className={`text-xs px-2 py-1 rounded border ${PILL_COLORS.violet}`}>Capture word</button>
+                <button onClick={() => append('capture|number|')}         className={`text-xs px-2 py-1 rounded border ${PILL_COLORS.violet}`}>Capture number</button>
+                <button onClick={() => append('capture|wildcard|')}       className={`text-xs px-2 py-1 rounded border ${PILL_COLORS.violet}`}>Wildcard</button>
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <p className="text-twitch-muted text-xs font-medium uppercase tracking-wider">Optional</p>
+              <div className="flex flex-wrap gap-1.5">
+                <button onClick={() => append('optional|word')}                    className={`text-xs px-2 py-1 rounded border ${PILL_COLORS.rose}`}>Optional word</button>
+                <button onClick={() => append('optional_capture|text|')}           className={`text-xs px-2 py-1 rounded border ${PILL_COLORS.rose}`}>Optional capture</button>
+                <button onClick={() => append('optional_capture|number|')}         className={`text-xs px-2 py-1 rounded border ${PILL_COLORS.rose}`}>Optional number</button>
+                <button onClick={() => append('optional_choice||option1|option2')} className={`text-xs px-2 py-1 rounded border ${PILL_COLORS.rose}`}>Optional choice</button>
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <p className="text-twitch-muted text-xs font-medium uppercase tracking-wider">Constraints</p>
+              <div className="flex flex-wrap gap-1.5">
+                <button onClick={() => append('anyof|option1|option2')} className={`text-xs px-2 py-1 rounded border ${PILL_COLORS.teal}`}>Any of these words</button>
+                <button onClick={() => append('minletters|3')}          className={`text-xs px-2 py-1 rounded border ${PILL_COLORS.sky}`}>Min letters</button>
+                <button onClick={() => append('mindigits|1')}           className={`text-xs px-2 py-1 rounded border ${PILL_COLORS.sky}`}>Min numbers</button>
+                <button onClick={() => append('msg_start')}             className={`text-xs px-2 py-1 rounded border ${PILL_COLORS.amber}`}>Message Start</button>
+                <button onClick={() => append('msg_end')}               className={`text-xs px-2 py-1 rounded border ${PILL_COLORS.amber}`}>Message End</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="px-4 py-3 border-t border-twitch-border shrink-0 space-y-3">
+          <div className="space-y-1">
+            <label className="text-twitch-muted text-xs">Pill label</label>
+            <input value={label} onChange={e => setLabel(e.target.value)} placeholder="e.g. location, amount…"
+              className="w-full text-xs bg-twitch-dark border border-twitch-border rounded px-2 py-1.5 text-twitch-text focus:outline-none focus:border-teal-600" />
+          </div>
+          <div className="flex gap-2">
+            <button onClick={onClose}
+              className="flex-1 text-xs px-3 py-2 rounded-lg border border-twitch-border text-twitch-muted hover:text-twitch-text transition-colors">
+              Cancel
+            </button>
+            <button onClick={handleInsert} disabled={!subPattern.trim()}
+              className="flex-1 bg-teal-600 hover:bg-teal-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs px-3 py-2 rounded-lg transition-colors">
+              Insert into pattern
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function PatternEditor({ pattern, onUpdate }) {
-  const insertDatapill = (type) => {
-    const additions = {
-      choice:           'choice||option1|option2',
-      capture_text:     'capture|text|',
-      capture_number:   'capture|number|',
-      capture_wildcard: 'capture|wildcard|',
-    }
-    const current = pattern || ''
-    onUpdate(current + (current ? ' ' : '') + `@{${additions[type]}}`)
+  const [modalOpen, setModalOpen] = useState(false)
+  const editorRef = useRef(null)
+
+  function insertRaw(content) {
+    editorRef.current?.insertAtCursor(`@{${content}}`)
+  }
+
+  function insertPill(pill) {
+    editorRef.current?.insertAtCursor(pill)
   }
 
   return (
     <div className="space-y-3">
-      <DatapillEditor mode="pattern" value={pattern} onChange={onUpdate} />
+      <DatapillEditor ref={editorRef} mode="pattern" value={pattern} onChange={onUpdate} />
       <div className="flex items-center gap-2 flex-wrap">
         <span className="text-twitch-muted text-xs">Insert:</span>
-        <button onClick={() => insertDatapill('choice')}
+        <button onClick={() => insertRaw('choice||option1|option2')}
           className={`text-xs px-2 py-1 rounded border ${PILL_COLORS.teal}`}>Choice</button>
-        <button onClick={() => insertDatapill('capture_text')}
-          className={`text-xs px-2 py-1 rounded border ${PILL_COLORS.violet}`}>Text</button>
-        <button onClick={() => insertDatapill('capture_number')}
+        <button onClick={() => insertRaw('capture|text|')}
+          className={`text-xs px-2 py-1 rounded border ${PILL_COLORS.violet}`}>Word</button>
+        <button onClick={() => insertRaw('capture|number|')}
           className={`text-xs px-2 py-1 rounded border ${PILL_COLORS.violet}`}>Number</button>
-        <button onClick={() => insertDatapill('capture_wildcard')}
+        <button onClick={() => insertRaw('capture|wildcard|')}
           className={`text-xs px-2 py-1 rounded border ${PILL_COLORS.violet}`}>Wildcard</button>
+        <button onClick={() => setModalOpen(true)}
+          className="text-xs px-2 py-1 rounded border border-twitch-border text-twitch-muted hover:text-twitch-text hover:border-twitch-muted transition-colors">
+          Advanced…
+        </button>
       </div>
+      {modalOpen && (
+        <PatternPillModal onInsert={insertPill} onClose={() => setModalOpen(false)} />
+      )}
     </div>
   )
 }
@@ -594,11 +1136,69 @@ function LanguageFilterPanel({ mode, words, ignoreSpaces, ignorePunct, onChange 
   )
 }
 
+// ── ObsSourceTriggerConfig ────────────────────────────────────────────────────
+
+function ObsSourceTriggerConfig({ trigger, patch }) {
+  const [obsScenes, setObsScenes] = useState([])
+  const [obsSources, setObsSources] = useState([])
+
+  useEffect(() => {
+    window.api.obs.getScenes().then(r => { if (r?.ok) setObsScenes(r.data?.scenes ?? []) }).catch(() => {})
+    window.api.shiny.getSourceList().then(r => { if (r?.ok) setObsSources(r.data ?? []) }).catch(() => {})
+  }, [])
+
+  return (
+    <section className="space-y-3">
+      <h2 className="text-twitch-text text-sm font-medium">When an OBS source changes...</h2>
+      <Card>
+        <div className="flex items-center gap-3">
+          <label className="text-twitch-muted text-xs w-20 shrink-0">Scene</label>
+          <select value={trigger.obsScene ?? ''} onChange={e => patch('obsScene', e.target.value || null)}
+            className="flex-1 text-xs bg-twitch-dark border border-twitch-border rounded px-2 py-1.5 text-twitch-text focus:outline-none focus:border-teal-600">
+            <option value="">Any scene</option>
+            {obsScenes.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </div>
+        <div className="flex items-center gap-3">
+          <label className="text-twitch-muted text-xs w-20 shrink-0">Source</label>
+          {Array.isArray(obsSources) && obsSources.length > 0 ? (
+            <select value={trigger.obsSource ?? ''} onChange={e => patch('obsSource', e.target.value)}
+              className="flex-1 text-xs bg-twitch-dark border border-twitch-border rounded px-2 py-1.5 text-twitch-text focus:outline-none focus:border-teal-600">
+              <option value="">(entire scene)</option>
+              {obsSources.filter(s => s?.name).map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
+            </select>
+          ) : (
+            <input value={trigger.obsSource ?? ''} onChange={e => patch('obsSource', e.target.value)}
+              placeholder="Source name"
+              className="flex-1 text-xs bg-twitch-dark border border-twitch-border rounded px-2 py-1.5 text-twitch-text focus:outline-none focus:border-teal-600" />
+          )}
+        </div>
+        <div className="flex items-center gap-3">
+          <label className="text-twitch-muted text-xs w-20 shrink-0">Becomes</label>
+          <div className="flex gap-2 flex-1">
+            {['visible','hidden'].map(state => (
+              <button key={state} onClick={() => patch('obsState', state)}
+                className={`flex-1 text-xs px-2 py-1.5 rounded border transition-colors capitalize ${
+                  (trigger.obsState ?? 'visible') === state
+                    ? 'bg-teal-900/30 border-teal-600 text-teal-400'
+                    : 'border-twitch-border text-twitch-muted hover:border-twitch-muted'
+                }`}>
+                {state}
+              </button>
+            ))}
+          </div>
+        </div>
+      </Card>
+    </section>
+  )
+}
+
 // ── ConsiderationRow ──────────────────────────────────────────────────────────
 
-function ConsiderationRow({ consideration, onChange, onRemove, onMoveUp, onMoveDown, canMoveUp, canMoveDown, sceneBlacklist = {} }) {
+function ConsiderationRow({ consideration, onChange, onRemove, onMoveUp, onMoveDown, canMoveUp, canMoveDown }) {
   const [obsSources, setObsSources] = useState([])
   const [obsScenes, setObsScenes] = useState([])
+  const [wordsDraft, setWordsDraft] = useState(null)
   const meta = CONSIDERATION_META[consideration.type] ?? { label: consideration.type, icon: Info, color: 'teal' }
   const colors = COLOR_CLASSES[meta.color] ?? COLOR_CLASSES.teal
   const Icon = meta.icon
@@ -658,9 +1258,12 @@ function ConsiderationRow({ consideration, onChange, onRemove, onMoveUp, onMoveD
               </button>
             ))}
           </div>
-          <textarea value={(consideration.words ?? []).join('\n')}
-            onChange={e => p('words', e.target.value.split('\n').map(s => s.trim()).filter(Boolean))}
-            rows={2} placeholder="One word per line..."
+          <textarea
+            value={wordsDraft ?? (consideration.words ?? []).join('\n')}
+            onFocus={() => setWordsDraft((consideration.words ?? []).join('\n'))}
+            onChange={e => setWordsDraft(e.target.value)}
+            onBlur={e => { p('words', e.target.value.split('\n').map(s => s.trim()).filter(Boolean)); setWordsDraft(null) }}
+            rows={Math.max(2, (wordsDraft ?? (consideration.words ?? []).join('\n')).split('\n').length)} placeholder="One word per line..."
             className="w-full text-xs bg-twitch-surface border border-twitch-border rounded px-2 py-1.5 text-twitch-text focus:outline-none focus:border-teal-600 resize-none" />
           <div className="flex gap-3">
             <label className="flex items-center gap-2 cursor-pointer text-xs">
@@ -700,7 +1303,7 @@ function ConsiderationRow({ consideration, onChange, onRemove, onMoveUp, onMoveD
             <select value={consideration.scene ?? ''} onChange={e => p('scene', e.target.value || null)}
               className="flex-1 text-xs bg-twitch-surface border border-twitch-border rounded px-2 py-1.5 text-twitch-text focus:outline-none focus:border-teal-600">
               <option value="">Active scene</option>
-              {obsScenes.filter(s => sceneBlacklist[s] !== 'always').map(s => (
+              {obsScenes.map(s => (
                 <option key={s} value={s}>{s}</option>
               ))}
             </select>
@@ -756,7 +1359,7 @@ function ConsiderationRow({ consideration, onChange, onRemove, onMoveUp, onMoveD
 
 // ── ActionRow ─────────────────────────────────────────────────────────────────
 
-function ActionRow({ action, onChange, onRemove, canRemove, hasBot, params, pattern, sceneBlacklist = {} }) {
+function ActionRow({ action, onChange, onRemove, canRemove, hasBot, params, pattern }) {
   const [advOpen, setAdvOpen] = useState(false)
   const [obsSources, setObsSources] = useState([])
   const [obsScenes, setObsScenes] = useState([])
@@ -786,6 +1389,8 @@ function ActionRow({ action, onChange, onRemove, canRemove, hasBot, params, patt
   const isAnnouncement = action.type === 'send_chat_response' && action.responseMode === 'announcement'
   const isChat = action.type === 'send_chat_response'
   const isMedia = action.type === 'play_media'
+  const isAudio = isMedia && (action.mediaType ?? 'audio') === 'audio'
+  const isVideo = isMedia && (action.mediaType ?? 'audio') === 'video'
   const isObs = action.type === 'obs_set_source'
   const isLine = action.type === 'random_line'
   const isLineFile = action.lineMode === 'file'
@@ -849,6 +1454,20 @@ function ActionRow({ action, onChange, onRemove, canRemove, hasBot, params, patt
           )}
         </div>
       </div>
+
+      {/* Play media type selector */}
+      {isMedia && (
+        <div className="flex items-center gap-2 px-3 py-2 border-b border-twitch-border bg-twitch-surface">
+          <div className="flex items-center gap-1 bg-twitch-dark rounded-lg p-0.5">
+            {[{ value: 'audio', label: 'Audio' }, { value: 'video', label: 'Video' }].map(m => (
+              <button key={m.value} onClick={() => patch('mediaType', m.value)}
+                className={`text-xs px-2 py-1 rounded transition-colors ${(action.mediaType ?? 'audio') === m.value ? 'bg-teal-700 text-white' : 'text-twitch-muted hover:text-twitch-text'}`}>
+                {m.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Chat response mode selector */}
       {isChat && (
@@ -931,38 +1550,56 @@ function ActionRow({ action, onChange, onRemove, canRemove, hasBot, params, patt
               <label className="text-twitch-muted text-xs">File</label>
               <div className="flex gap-2">
                 <input value={action.filePath ?? ''} onChange={e => patch('filePath', e.target.value)}
-                  placeholder="Path to audio or video file..."
+                  placeholder={isVideo ? 'Path to video file...' : 'Path to audio file...'}
                   className="flex-1 text-xs bg-twitch-surface border border-twitch-border rounded px-2 py-1.5 text-twitch-text focus:outline-none focus:border-teal-600" />
-                <button onClick={() => browsFile([{ name: 'Audio/Video', extensions: ['mp3','wav','ogg','m4a','mp4','mov','webm'] }])}
+                <button onClick={() => isVideo
+                  ? browsFile([{ name: 'Video', extensions: ['mp4','mov','webm','mkv'] }])
+                  : browsFile([{ name: 'Audio', extensions: ['mp3','wav','ogg','m4a'] }])}
                   className="text-xs px-2.5 py-1.5 bg-twitch-surface border border-twitch-border rounded hover:border-teal-600 text-twitch-muted hover:text-teal-400 transition-colors">
                   Browse…
                 </button>
               </div>
             </div>
-            <div className="space-y-1">
-              <label className="text-twitch-muted text-xs">Output device</label>
-              {audioDevices.length > 0 ? (
-                <select value={action.device ?? ''} onChange={e => patch('device', e.target.value)}
+            {isAudio && (
+              <>
+                <div className="space-y-1">
+                  <label className="text-twitch-muted text-xs">Output device</label>
+                  {audioDevices.length > 0 ? (
+                    <select value={action.device ?? ''} onChange={e => patch('device', e.target.value)}
+                      className="w-full text-xs bg-twitch-surface border border-twitch-border rounded px-2 py-1.5 text-twitch-text focus:outline-none focus:border-teal-600">
+                      <option value="">Default device</option>
+                      {audioDevices.map(d => <option key={d.deviceId} value={d.deviceId}>{d.label || d.deviceId}</option>)}
+                    </select>
+                  ) : (
+                    <button onClick={loadAudioDevices}
+                      className="text-xs text-teal-500 hover:text-teal-400 transition-colors">
+                      Load audio devices…
+                    </button>
+                  )}
+                </div>
+                <div className="space-y-1">
+                  <label className="text-twitch-muted text-xs">Volume</label>
+                  <div className="flex items-center gap-2">
+                    <input type="range" min={0} max={100} value={Math.round((action.volume ?? 1) * 100)}
+                      onChange={e => patch('volume', Number(e.target.value) / 100)}
+                      className="flex-1 accent-teal-500" />
+                    <span className="text-twitch-muted text-xs w-8">{Math.round((action.volume ?? 1) * 100)}%</span>
+                  </div>
+                </div>
+              </>
+            )}
+            {isVideo && (
+              <div className="space-y-1">
+                <label className="text-twitch-muted text-xs">OBS source</label>
+                <select value={action.obsSource ?? ''} onChange={e => patch('obsSource', e.target.value)}
                   className="w-full text-xs bg-twitch-surface border border-twitch-border rounded px-2 py-1.5 text-twitch-text focus:outline-none focus:border-teal-600">
-                  <option value="">Default device</option>
-                  {audioDevices.map(d => <option key={d.deviceId} value={d.deviceId}>{d.label || d.deviceId}</option>)}
+                  <option value="">(select a media source)</option>
+                  {obsSources.filter(s => s?.sourceName).map(s => (
+                    <option key={s.sourceName} value={s.sourceName}>{s.sourceName}</option>
+                  ))}
                 </select>
-              ) : (
-                <button onClick={loadAudioDevices}
-                  className="text-xs text-teal-500 hover:text-teal-400 transition-colors">
-                  Load audio devices…
-                </button>
-              )}
-            </div>
-            <div className="space-y-1">
-              <label className="text-twitch-muted text-xs">Volume</label>
-              <div className="flex items-center gap-2">
-                <input type="range" min={0} max={100} value={Math.round((action.volume ?? 1) * 100)}
-                  onChange={e => patch('volume', Number(e.target.value) / 100)}
-                  className="flex-1 accent-teal-500" />
-                <span className="text-twitch-muted text-xs w-8">{Math.round((action.volume ?? 1) * 100)}%</span>
               </div>
-            </div>
+            )}
           </div>
         )}
 
@@ -1023,7 +1660,7 @@ function ActionRow({ action, onChange, onRemove, canRemove, hasBot, params, patt
               <select value={action.scene ?? ''} onChange={e => patch('scene', e.target.value || null)}
                 className="w-full text-xs bg-twitch-surface border border-twitch-border rounded px-2 py-1.5 text-twitch-text focus:outline-none focus:border-teal-600">
                 <option value="">Active scene</option>
-                {obsScenes.filter(s => sceneBlacklist[s] !== 'always').map(s => (
+                {obsScenes.map(s => (
                   <option key={s} value={s}>{s}</option>
                 ))}
               </select>
@@ -1119,9 +1756,181 @@ function ConditionEditor({ condition, onChange }) {
   )
 }
 
+// ── ActivationCard ────────────────────────────────────────────────────────────
+
+function ActivationCard({ activation, onChange }) {
+  const act = activation ?? emptyActivation()
+  const conds = act.conditions ?? {}
+  const gameCategories = conds.gameCategories ?? []
+  const titleContains = conds.titleContains ?? []
+
+  const [gameQuery, setGameQuery] = useState('')
+  const [gameResults, setGameResults] = useState([])
+  const [gameSearching, setGameSearching] = useState(false)
+  const [titleInput, setTitleInput] = useState('')
+  const gameSearchRef = useRef(null)
+  const [gameDropdownOpen, setGameDropdownOpen] = useState(false)
+
+  function setMode(mode) { onChange({ ...act, mode }) }
+  function setLogic(logic) { onChange({ ...act, logic }) }
+  function setCond(k, v) { onChange({ ...act, conditions: { ...conds, [k]: v } }) }
+
+  function addGame(name) {
+    if (!name || gameCategories.includes(name)) return
+    setCond('gameCategories', [...gameCategories, name])
+    setGameQuery(''); setGameResults([]); setGameDropdownOpen(false)
+  }
+  function removeGame(name) { setCond('gameCategories', gameCategories.filter(g => g !== name)) }
+
+  function addTitle() {
+    const v = titleInput.trim()
+    if (!v || titleContains.includes(v)) return
+    setCond('titleContains', [...titleContains, v])
+    setTitleInput('')
+  }
+  function removeTitle(v) { setCond('titleContains', titleContains.filter(t => t !== v)) }
+
+  useEffect(() => {
+    if (!gameQuery || gameQuery.length < 2) { setGameResults([]); setGameDropdownOpen(false); return }
+    setGameSearching(true)
+    const t = setTimeout(async () => {
+      try {
+        const res = await window.api.twitch.searchCategories(gameQuery)
+        setGameResults(res?.data ?? [])
+        setGameDropdownOpen(true)
+      } catch { setGameResults([]) }
+      finally { setGameSearching(false) }
+    }, 300)
+    return () => clearTimeout(t)
+  }, [gameQuery])
+
+  // close dropdown on outside click
+  useEffect(() => {
+    function handler(e) { if (gameSearchRef.current && !gameSearchRef.current.contains(e.target)) setGameDropdownOpen(false) }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
+
+  return (
+    <Card title={<span className="flex items-center gap-1.5"><Zap size={13} className="text-teal-400" />Activation</span>}>
+      <div className="flex items-center gap-2">
+        <label className="text-twitch-muted text-xs w-14 shrink-0">Mode</label>
+        <div className="flex gap-1 bg-twitch-dark rounded-lg p-0.5">
+          {[['manual', 'Manual'], ['auto', 'Auto (stream rules)']].map(([v, lbl]) => (
+            <button key={v} type="button" onClick={() => setMode(v)}
+              className={`text-xs px-2.5 py-1 rounded transition-colors ${act.mode === v ? 'bg-teal-700 text-white' : 'text-twitch-muted hover:text-twitch-text'}`}>
+              {lbl}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {act.mode === 'auto' && (
+        <div className="space-y-4 pt-1">
+          <div className="flex items-center gap-2">
+            <label className="text-twitch-muted text-xs w-14 shrink-0">Logic</label>
+            <div className="flex gap-1 bg-twitch-dark rounded-lg p-0.5">
+              {[['and', 'All conditions (AND)'], ['or', 'Any condition (OR)']].map(([v, lbl]) => (
+                <button key={v} type="button" onClick={() => setLogic(v)}
+                  className={`text-xs px-2.5 py-1 rounded transition-colors ${act.logic === v ? 'bg-teal-700 text-white' : 'text-twitch-muted hover:text-twitch-text'}`}>
+                  {lbl}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Live condition */}
+          <div className="space-y-2">
+            <label className="flex items-center gap-2.5 cursor-pointer">
+              <Toggle on={!!conds.whenLive} onChange={v => setCond('whenLive', v)} size="sm" />
+              <span className="text-twitch-text text-xs font-medium">Stream is live</span>
+            </label>
+          </div>
+
+          {/* Game categories */}
+          <div className="space-y-2">
+            <span className="text-twitch-text text-xs font-medium block">Game category is any of</span>
+            <div ref={gameSearchRef} className="relative">
+              <div className="flex gap-2">
+                <input
+                  value={gameQuery}
+                  onChange={e => setGameQuery(e.target.value)}
+                  placeholder="Search games..."
+                  className="flex-1 bg-twitch-surface border border-twitch-border rounded px-2 py-1.5 text-twitch-text text-xs focus:outline-none focus:border-teal-600"
+                />
+                {gameSearching && <Loader size={12} className="animate-spin text-twitch-muted self-center shrink-0" />}
+              </div>
+              {gameDropdownOpen && gameResults.length > 0 && (
+                <div className="absolute z-50 top-full mt-1 left-0 right-0 bg-twitch-surface border border-twitch-border rounded-lg shadow-lg overflow-hidden max-h-52 overflow-y-auto">
+                  {gameResults.map(g => (
+                    <button key={g.id} type="button" onMouseDown={() => addGame(g.name)}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 hover:bg-twitch-border transition-colors text-left">
+                      {g.box_art_url && <img src={g.box_art_url} alt="" className="w-6 h-8 rounded object-cover shrink-0" />}
+                      <span className="text-twitch-text text-xs">{g.name}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            {gameCategories.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {gameCategories.map(g => (
+                  <span key={g} className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-purple-900/30 border border-purple-700/50 text-purple-300">
+                    {g}
+                    <button type="button" onClick={() => removeGame(g)} className="hover:text-red-400 transition-colors ml-0.5">
+                      <X size={10} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Title contains */}
+          <div className="space-y-2">
+            <span className="text-twitch-text text-xs font-medium block">Title contains any of</span>
+            <div className="flex gap-2">
+              <input
+                value={titleInput}
+                onChange={e => setTitleInput(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), addTitle())}
+                placeholder="Type a phrase and press Enter..."
+                className="flex-1 bg-twitch-surface border border-twitch-border rounded px-2 py-1.5 text-twitch-text text-xs focus:outline-none focus:border-teal-600"
+              />
+              <button type="button" onClick={addTitle}
+                className="px-2.5 py-1 bg-twitch-surface border border-twitch-border rounded text-twitch-muted hover:text-teal-400 hover:border-teal-600 transition-colors text-xs">
+                Add
+              </button>
+            </div>
+            {titleContains.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {titleContains.map(t => (
+                  <span key={t} className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-blue-900/30 border border-blue-700/50 text-blue-300">
+                    {t}
+                    <button type="button" onClick={() => removeTitle(t)} className="hover:text-red-400 transition-colors ml-0.5">
+                      <X size={10} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {act.currentOverride !== null && (
+            <p className="text-amber-400 text-xs flex items-center gap-1">
+              <AlertTriangle size={11} />
+              Manual override active — auto rules paused until stream state changes.
+            </p>
+          )}
+        </div>
+      )}
+    </Card>
+  )
+}
+
 // ── ResponseGroup ─────────────────────────────────────────────────────────────
 
-function ResponseGroup({ group, onChange, onRemove, canRemove, hasBot, params, pattern, groupIndex, sceneBlacklist, isMultiResponse }) {
+function ResponseGroup({ group, onChange, onRemove, canRemove, hasBot, params, pattern, groupIndex, isMultiResponse }) {
   function patchGroup(k, v) { onChange({ ...group, [k]: v }) }
   function addAction() { patchGroup('actions', [...group.actions, emptyAction()]) }
   function updateAction(aid, updated) { patchGroup('actions', group.actions.map(a => a.id === aid ? updated : a)) }
@@ -1150,8 +1959,7 @@ function ResponseGroup({ group, onChange, onRemove, canRemove, hasBot, params, p
               onChange={updated => updateAction(action.id, updated)}
               onRemove={() => removeAction(action.id)}
               canRemove={group.actions.length > 1}
-              hasBot={hasBot} params={params} pattern={pattern}
-              sceneBlacklist={sceneBlacklist} />
+              hasBot={hasBot} params={params} pattern={pattern} />
           ))}
         </div>
         <button onClick={addAction} className="flex items-center gap-1.5 text-teal-500 hover:text-teal-400 text-xs transition-colors">
@@ -1197,147 +2005,6 @@ function ParamRow({ param, onChange, onRemove }) {
   )
 }
 
-// ── SceneWarningModal ─────────────────────────────────────────────────────────
-
-function SceneWarningModal({ scenes, blacklist, onUpdate, onClose }) {
-  const [sourceStatus, setSourceStatus] = useState({})
-  const [loading, setLoading] = useState(true)
-  const [skipMenuOpen, setSkipMenuOpen] = useState(null)
-  const [showSkipped, setShowSkipped] = useState(false)
-
-  useEffect(() => {
-    async function checkSources() {
-      const status = {}
-      for (const scene of scenes) {
-        const res = await window.api.obs.checkChatTriggersPlayer(scene)
-        status[scene] = res?.exists ?? false
-      }
-      setSourceStatus(status)
-      setLoading(false)
-    }
-    checkSources()
-
-    // Poll for changes every 2 seconds while modal is open
-    const interval = setInterval(checkSources, 2000)
-    return () => clearInterval(interval)
-  }, [scenes])
-
-  const missingScenes = scenes.filter(s => !sourceStatus[s] && blacklist[s] !== 'always')
-  const skippedScenes = scenes.filter(s => blacklist[s] === 'acknowledged' || blacklist[s] === 'always')
-
-  function skipScene(scene, scope) {
-    const next = { ...blacklist }
-    next[scene] = scope
-    onUpdate(next)
-    setSkipMenuOpen(null)
-  }
-
-  function unSkipScene(scene) {
-    const next = { ...blacklist }
-    delete next[scene]
-    onUpdate(next)
-  }
-
-  async function addPlayerToScene(scene) {
-    try {
-      const playerUrl = 'http://localhost:1102/player/index.html'
-      await window.api.obs.addBrowserSource({ sceneName: scene, url: playerUrl, inputName: 'Chat Triggers Player' })
-      setSourceStatus(prev => ({ ...prev, [scene]: true }))
-    } catch (err) {
-      console.error('Failed to add player:', err)
-    }
-  }
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>
-      <div className="bg-twitch-mid border border-twitch-border rounded-xl shadow-2xl w-full max-w-lg max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-4 py-3 border-b border-twitch-border">
-          <div className="flex items-center gap-2">
-            <AlertTriangle size={14} className="text-amber-400" />
-            <h2 className="text-twitch-text text-sm font-semibold">Scene outputs</h2>
-          </div>
-          <button onClick={onClose} className="text-twitch-muted hover:text-twitch-text transition-colors"><X size={14} /></button>
-        </div>
-        <div className="overflow-y-auto p-4 space-y-4">
-          {scenes.length === 0 && <p className="text-twitch-muted text-xs italic">Connect OBS to see scenes.</p>}
-          {loading && <p className="text-twitch-muted text-xs">Checking sources...</p>}
-
-          {!loading && missingScenes.length === 0 && skippedScenes.length === 0 && (
-            <p className="text-twitch-muted text-xs italic">All scenes are configured.</p>
-          )}
-
-          {!loading && missingScenes.length > 0 && (
-            <div>
-              <p className="text-twitch-text text-xs font-semibold mb-3">Player not found in:</p>
-              <div className="space-y-2">
-                {missingScenes.map(scene => (
-                  <div key={scene} className="flex items-center gap-2 p-3 rounded bg-red-900/20 border border-red-700/30">
-                    <span className="text-sm text-twitch-text flex-1">{scene}</span>
-                    <button onClick={() => addPlayerToScene(scene)}
-                      className="text-xs px-3 py-1 bg-teal-700 hover:bg-teal-600 text-white rounded transition-colors">
-                      Add
-                    </button>
-                    <div className="relative" onClick={e => e.stopPropagation()}>
-                      <button onClick={() => setSkipMenuOpen(skipMenuOpen === scene ? null : scene)}
-                        className="text-xs px-3 py-1 bg-twitch-surface hover:bg-twitch-border text-twitch-text rounded transition-colors">
-                        Skip
-                      </button>
-                      {skipMenuOpen === scene && (
-                        <>
-                          <div className="fixed inset-0 z-10" onClick={() => setSkipMenuOpen(null)} />
-                          <div className="absolute right-0 mt-1 bg-twitch-mid border border-twitch-border rounded shadow-lg z-20 w-40">
-                            <button onClick={() => skipScene(scene, 'acknowledged')}
-                              className="block w-full text-left text-xs px-3 py-2 hover:bg-twitch-surface transition-colors">
-                              Just this trigger
-                            </button>
-                            <button onClick={() => skipScene(scene, 'always')}
-                              className="block w-full text-left text-xs px-3 py-2 hover:bg-twitch-surface transition-colors border-t border-twitch-border">
-                              Never ask again
-                            </button>
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {skippedScenes.length > 0 && (
-            <div className="border-t border-twitch-border pt-4">
-              <button onClick={() => setShowSkipped(!showSkipped)}
-                className="flex items-center gap-2 text-xs text-twitch-muted hover:text-twitch-text transition-colors mb-2">
-                {showSkipped ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-                Skipped ({skippedScenes.length})
-              </button>
-              {showSkipped && (
-                <div className="space-y-2">
-                  {skippedScenes.map(scene => {
-                    const scope = blacklist[scene]
-                    return (
-                      <div key={scene} className="flex items-center justify-between gap-2 p-2 rounded bg-twitch-dark border border-twitch-border/50">
-                        <div className="flex-1 min-w-0">
-                          <p className="text-xs text-twitch-text truncate">{scene}</p>
-                          <p className="text-xs text-twitch-muted">{scope === 'acknowledged' ? 'This trigger only' : 'Permanently'}</p>
-                        </div>
-                        <button onClick={() => unSkipScene(scene)}
-                          className="text-xs px-2 py-1 bg-twitch-surface hover:bg-twitch-border text-twitch-text rounded transition-colors whitespace-nowrap">
-                          Reset
-                        </button>
-                      </div>
-                    )
-                  })}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  )
-}
-
 // ── Main Editor ───────────────────────────────────────────────────────────────
 
 export default function ChatTriggerEditor() {
@@ -1353,9 +2020,6 @@ export default function ChatTriggerEditor() {
   const [testUsername, setTestUsername] = useState('')
   const [testResults, setTestResults] = useState(null)
   const [toast, setToast] = useState(null)
-  const [scenes, setScenes] = useState([])
-  const [sceneBlacklist, setSceneBlacklist] = useState({})
-  const [warningOpen, setWarningOpen] = useState(false)
   const [addConsidMenu, setAddConsidMenu] = useState(false)
   const [addConditionMenu, setAddConditionMenu] = useState(false)
   const [editingConditionId, setEditingConditionId] = useState(null)
@@ -1363,8 +2027,6 @@ export default function ChatTriggerEditor() {
 
   useEffect(() => {
     window.api.chatTriggers.getBotAccount().then(r => { if (r.ok && r.data) setHasBot(true) })
-    window.api.obs.getScenes().then(r => { if (r?.ok) setScenes(r.data?.scenes ?? []) })
-    window.api.settings.get('sceneBlacklist').then(v => setSceneBlacklist(v?.data ?? {}))
 
     if (!isNew) {
       window.api.chatTriggers.list().then(res => {
@@ -1404,6 +2066,14 @@ export default function ChatTriggerEditor() {
             found.responses ??= [{ id: uid(), actions: [emptyAction()] }]
             found.routing ??= []
             found.considerations ??= []
+            found.activation ??= emptyActivation()
+            found.activation.conditions ??= emptyActivation().conditions
+            // migrate single-string fields to arrays
+            const ac = found.activation.conditions
+            if (typeof ac.gameCategory === 'string') { ac.gameCategories = ac.gameCategory ? [ac.gameCategory] : []; delete ac.gameCategory }
+            ac.gameCategories ??= []
+            if (typeof ac.titleContains === 'string') { ac.titleContains = ac.titleContains ? [ac.titleContains] : [] }
+            ac.titleContains ??= []
             found.commandParams = (found.commandParams ?? []).map(p => ({
               paramType: 'text', defaultValue: '', ...p,
             }))
@@ -1531,12 +2201,6 @@ export default function ChatTriggerEditor() {
     }
   }
 
-  // scene blacklist
-  function updateBlacklist(next) {
-    setSceneBlacklist(next)
-    window.api.settings.set('sceneBlacklist', next)
-  }
-
   async function handleSave() {
     if (!trigger.name.trim()) return
     setSaving(true)
@@ -1545,6 +2209,10 @@ export default function ChatTriggerEditor() {
       pattern: trigger.type === 'message' ? (trigger.pattern ?? '') : undefined,
       template: undefined,
       actions: undefined,
+      // Timer-specific defaults
+      interval: trigger.type === 'timer' ? (trigger.interval ?? 15) : undefined,
+      intervalUnit: trigger.type === 'timer' ? (trigger.intervalUnit ?? 'minutes') : undefined,
+      onlyWhenLive: trigger.type === 'timer' ? (trigger.onlyWhenLive ?? true) : undefined,
     }
     const res = isNew
       ? await window.api.chatTriggers.create(toSave)
@@ -1560,11 +2228,6 @@ export default function ChatTriggerEditor() {
 
   const commandParamNames = (trigger.commandParams ?? []).map(p => p.name).filter(Boolean)
 
-  const hasMediaActions = (trigger.responses ?? [])
-    .some(r => (r.actions ?? []).some(a => a.type === 'play_media' || a.type === 'obs_set_source'))
-
-  const showWarningIcon = hasMediaActions && scenes.length > 0
-
   if (loading) return (
     <div className="flex items-center justify-center h-full">
       <Loader size={20} className="animate-spin text-twitch-muted" />
@@ -1579,23 +2242,12 @@ export default function ChatTriggerEditor() {
         </div>
       )}
 
-      {warningOpen && (
-        <SceneWarningModal scenes={scenes} blacklist={sceneBlacklist}
-          onUpdate={updateBlacklist} onClose={() => setWarningOpen(false)} />
-      )}
-
       {/* Header */}
       <div className="flex items-center gap-3 px-6 py-4 border-b border-twitch-border shrink-0">
         <button onClick={() => navigate('/chat-triggers')} className="text-twitch-muted hover:text-twitch-text transition-colors">
           <ArrowLeft size={16} />
         </button>
         <h1 className="text-twitch-text font-semibold flex-1">{isNew ? 'New Trigger' : 'Edit Trigger'}</h1>
-        {showWarningIcon && (
-          <button onClick={() => setWarningOpen(true)} title="Review scene playback settings"
-            className="flex items-center gap-1.5 text-amber-400 hover:text-amber-300 text-xs transition-colors px-2 py-1 rounded border border-amber-700/50 bg-amber-900/20 hover:bg-amber-900/30">
-            <AlertTriangle size={13} /> Scene warning
-          </button>
-        )}
       </div>
 
       <div className="flex-1 overflow-y-auto p-6 space-y-6">
@@ -1612,8 +2264,13 @@ export default function ChatTriggerEditor() {
         </div>
 
         {/* Type */}
-        <div className="flex items-center gap-0.5 bg-twitch-dark rounded-xl p-1 w-fit">
-          {[{ value: 'message', label: '# Chat message' }, { value: 'command', label: '! Command' }].map(opt => (
+        <div className="flex items-center gap-0.5 bg-twitch-dark rounded-xl p-1 w-fit flex-wrap">
+          {[
+            { value: 'message',    label: '# Chat message' },
+            { value: 'command',    label: '! Command' },
+            { value: 'obs_source', label: '📡 OBS Source' },
+            { value: 'timer',      label: '⏱ Timer' },
+          ].map(opt => (
             <button key={opt.value} onClick={() => patch('type', opt.value)}
               className={`px-3 py-1.5 rounded-lg border text-sm transition-colors ${
                 trigger.type === opt.value
@@ -1689,6 +2346,42 @@ export default function ChatTriggerEditor() {
           </section>
         )}
 
+        {/* OBS Source trigger config */}
+        {trigger.type === 'obs_source' && (
+          <ObsSourceTriggerConfig trigger={trigger} patch={patch} />
+        )}
+
+        {/* Timer trigger config */}
+        {trigger.type === 'timer' && (
+          <section className="space-y-3">
+            <h2 className="text-twitch-text text-sm font-medium">Timer settings</h2>
+            <Card>
+              <div className="flex items-center gap-3">
+                <label className="text-twitch-muted text-xs w-24 shrink-0">Fire every</label>
+                <input type="number" min={1} value={trigger.interval ?? 15}
+                  onChange={e => patch('interval', Math.max(1, Number(e.target.value)))}
+                  className="w-20 bg-twitch-dark border border-twitch-border rounded px-2 py-1.5 text-twitch-text text-sm focus:outline-none focus:border-teal-600" />
+                <div className="flex gap-1">
+                  {['minutes','hours'].map(unit => (
+                    <button key={unit} onClick={() => patch('intervalUnit', unit)}
+                      className={`text-xs px-3 py-1.5 rounded border transition-colors capitalize ${
+                        (trigger.intervalUnit ?? 'minutes') === unit
+                          ? 'bg-teal-900/30 border-teal-600 text-teal-400'
+                          : 'border-twitch-border text-twitch-muted hover:border-twitch-muted'
+                      }`}>
+                      {unit}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <Toggle on={trigger.onlyWhenLive ?? true} onChange={v => patch('onlyWhenLive', v)} size="md" />
+                <span className="text-twitch-muted text-xs">Only fire when stream is live</span>
+              </label>
+            </Card>
+          </section>
+        )}
+
         {/* Special Considerations */}
         <section className="space-y-3">
           <div className="flex items-center justify-between">
@@ -1698,9 +2391,11 @@ export default function ChatTriggerEditor() {
                 <p className="text-twitch-muted text-xs mt-1">Executed in order from top to bottom</p>
               )}
             </div>
+          </div>
+          <div className="flex justify-center mt-2">
             <div className="relative">
               <button onClick={() => setAddConsidMenu(o => !o)}
-                className="flex items-center gap-1 text-xs text-teal-500 hover:text-teal-400 transition-colors">
+                className="flex items-center gap-1 text-xs text-teal-500 border border-teal-500 hover:border-teal-400 hover:text-teal-400 rounded-full px-4 py-1 transition-colors">
                 <Plus size={12} /> Add consideration
               </button>
               {addConsidMenu && (
@@ -1718,9 +2413,6 @@ export default function ChatTriggerEditor() {
               )}
             </div>
           </div>
-          {(trigger.considerations ?? []).length === 0 && (
-            <p className="text-twitch-muted text-xs italic">No special conditions — trigger always fires when matched.</p>
-          )}
           <div className="space-y-3">
             {(trigger.considerations ?? []).map((c, idx) => (
               <ConsiderationRow key={c.id} consideration={c}
@@ -1729,8 +2421,7 @@ export default function ChatTriggerEditor() {
                 onMoveUp={() => moveConsiderationUp(c.id)}
                 onMoveDown={() => moveConsiderationDown(c.id)}
                 canMoveUp={idx > 0}
-                canMoveDown={idx < (trigger.considerations ?? []).length - 1}
-                sceneBlacklist={sceneBlacklist} />
+                canMoveDown={idx < (trigger.considerations ?? []).length - 1} />
             ))}
           </div>
         </section>
@@ -1984,7 +2675,6 @@ export default function ChatTriggerEditor() {
                 onRemove={() => removeResponse(response.id)}
                 canRemove={(trigger.responses ?? []).length > 1}
                 hasBot={hasBot} params={commandParamNames} pattern={trigger.pattern}
-                sceneBlacklist={sceneBlacklist}
                 isMultiResponse={(trigger.responses ?? []).length > 1} />
             ))}
           </div>
@@ -2012,6 +2702,9 @@ export default function ChatTriggerEditor() {
           </div>
         </Card>
 
+        {/* Activation */}
+        <ActivationCard activation={trigger.activation} onChange={v => patch('activation', v)} />
+
         {/* Test panel */}
         {!isNew && (
           <Card title="Test">
@@ -2032,6 +2725,23 @@ export default function ChatTriggerEditor() {
             ))}
           </Card>
         )}
+
+        {/* Cyclical trigger warning */}
+        {!hasBot && (() => {
+          const allTemplates = (trigger.responses ?? []).flatMap(r => (r.actions ?? []).map(a => a.template ?? '')).join(' ')
+          const hasChatAction = (trigger.responses ?? []).some(r => (r.actions ?? []).some(a => a.type === 'send_chat_response'))
+          const looksRecursive = hasChatAction && allTemplates.trim().length > 0
+          if (!looksRecursive) return null
+          return (
+            <div className="flex items-start gap-2.5 px-4 py-3 bg-amber-900/20 border border-amber-700/40 rounded-xl">
+              <AlertTriangle size={14} className="text-amber-400 shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                <p className="text-amber-300 text-xs font-medium">No bot account set up</p>
+                <p className="text-amber-400/80 text-xs">Without a bot account, your main account sends responses — which may trigger your own triggers again and create a loop. Set up a bot account in Settings to prevent this.</p>
+              </div>
+            </div>
+          )
+        })()}
 
         {/* Save / Cancel */}
         <div className="flex items-center gap-3 pt-2 pb-6">

@@ -14,10 +14,20 @@ let _mainWindow = null
 const _msgHandlers = []
 const _connHandlers = []
 
+// Timer and OBS source trigger state
+let _engineOpts = {}
+const _timerHandles = new Map() // triggerId -> intervalHandle
+
+// ── Stream state polling ───────────────────────────────────────────────────
+
+let _streamState = { isLive: false, gameCategory: null, title: null }
+let _streamPollHandle = null
+
 export function onChatMessage(cb) { _msgHandlers.push(cb) }
 export function onConnectionChange(cb) { _connHandlers.push(cb) }
 export function setEngineWindow(win) { _mainWindow = win }
 export function getChatEngineStatus() { return { connected: _connected, channel: _channel } }
+export function setEngineOpts(opts) { _engineOpts = opts }
 
 export function startChatEngine(username, token, channelName) {
   _username = username?.toLowerCase()
@@ -113,6 +123,10 @@ function _parseLine(line) {
       isVip: !!badges['vip'],
       isBroadcaster: username.toLowerCase() === _channel,
     }
+    // Skip messages from the configured bot account to prevent trigger loops
+    const botLogin = typeof _engineOpts.botUsername === 'function' ? _engineOpts.botUsername() : _engineOpts.botUsername
+    if (botLogin && username.toLowerCase() === botLogin) return
+
     _msgHandlers.forEach(cb => cb(msg))
     _mainWindow?.webContents.send('chatTriggers:message', msg)
   }
@@ -133,13 +147,47 @@ function _parsePattern(pattern) {
       const parts = content.split('|')
 
       if (parts[0] === 'choice') {
-        const options = parts.slice(2).filter(Boolean)
         const name = parts[1] || ''
+        const options = parts.slice(2).filter(Boolean)
+          .map(o => { try { return decodeURIComponent(o) } catch { return o } })
+          .filter(o => o.trim())
         segments.push({ type: 'choice', options, name })
       } else if (parts[0] === 'capture') {
         const captureType = parts[1] || 'text'
         const name = parts[2] || ''
         segments.push({ type: 'capture', captureType, name })
+      } else if (parts[0] === 'optional') {
+        segments.push({ type: 'optional', value: parts.slice(1).join('|') })
+      } else if (parts[0] === 'optional_capture') {
+        const captureType = parts[1] || 'text'
+        const name = parts[2] || ''
+        segments.push({ type: 'optional_capture', captureType, name })
+      } else if (parts[0] === 'optional_choice') {
+        const name = parts[1] || ''
+        const options = parts.slice(2).filter(Boolean)
+        segments.push({ type: 'optional_choice', name, options })
+      } else if (parts[0] === 'optional_seq') {
+        try {
+          const subPattern = decodeURIComponent(parts.slice(1).join('|'))
+          segments.push({ type: 'optional_seq', subPattern })
+        } catch {}
+      } else if (parts[0] === 'seq') {
+        try {
+          // format: seq|LABEL|ENCODED (new) or seq|ENCODED (old)
+          const encoded = parts.length >= 3 ? parts[2] : parts[1]
+          const subPattern = decodeURIComponent(encoded || '')
+          segments.push({ type: 'seq', subPattern })
+        } catch {}
+      } else if (parts[0] === 'anyof') {
+        segments.push({ type: 'anyof', options: parts.slice(1).filter(Boolean) })
+      } else if (parts[0] === 'minletters') {
+        segments.push({ type: 'minletters', min: parseInt(parts[1]) || 1 })
+      } else if (parts[0] === 'mindigits') {
+        segments.push({ type: 'mindigits', min: parseInt(parts[1]) || 1 })
+      } else if (parts[0] === 'msg_start') {
+        segments.push({ type: 'msg_start' })
+      } else if (parts[0] === 'msg_end') {
+        segments.push({ type: 'msg_end' })
       }
       i = end + 1
     } else {
@@ -156,11 +204,10 @@ function _parsePattern(pattern) {
   return segments
 }
 
-function _matchPattern(pattern, text) {
-  if (!pattern) return { match: true, params: {} }
-
-  const segments = _parsePattern(pattern)
-  let remaining = text.trim()
+// Returns { params, remaining } or null. Used by _matchPattern and optional_seq.
+function _executeMatch(segments, text) {
+  const originalText = text
+  let remaining = text
   const params = {}
 
   for (const segment of segments) {
@@ -170,12 +217,14 @@ function _matchPattern(pattern, text) {
       remaining = remaining.slice(lit.length).trimStart()
     } else if (segment.type === 'choice') {
       const opts = segment.options ?? []
+      const paramName = segment.name || `param_${Object.keys(params).length}`
       let matched = false
       for (const opt of opts) {
-        if (remaining.startsWith(opt)) {
-          const paramName = segment.name || `param_${Object.keys(params).length}`
-          params[paramName] = opt
-          remaining = remaining.slice(opt.length).trimStart()
+        const subResult = _executeMatch(_parsePattern(opt), remaining)
+        if (subResult !== null) {
+          params[paramName] = remaining.slice(0, remaining.length - subResult.remaining.length).trim()
+          Object.assign(params, subResult.params)
+          remaining = subResult.remaining
           matched = true
           break
         }
@@ -188,25 +237,74 @@ function _matchPattern(pattern, text) {
         if (!m) return null
         params[paramName] = m[1]
         remaining = remaining.slice(m[1].length).trimStart()
-      } else if (segment.captureType === 'wildcard') {
-        const m = remaining.match(/^(\S+)/)
-        if (!m) return null
-        params[paramName] = m[1]
-        remaining = remaining.slice(m[1].length).trimStart()
       } else {
         const m = remaining.match(/^(\S+)/)
         if (!m) return null
         params[paramName] = m[1]
         remaining = remaining.slice(m[1].length).trimStart()
       }
+    } else if (segment.type === 'optional') {
+      const word = segment.value
+      if (remaining.startsWith(word)) remaining = remaining.slice(word.length).trimStart()
+    } else if (segment.type === 'optional_capture') {
+      const paramName = segment.name || `param_${Object.keys(params).length}`
+      if (segment.captureType === 'number') {
+        const m = remaining.match(/^(\d+)/)
+        if (m) { params[paramName] = m[1]; remaining = remaining.slice(m[1].length).trimStart() }
+      } else {
+        const m = remaining.match(/^(\S+)/)
+        if (m) { params[paramName] = m[1]; remaining = remaining.slice(m[1].length).trimStart() }
+      }
+    } else if (segment.type === 'optional_choice') {
+      const opts = segment.options ?? []
+      const paramName = segment.name || `param_${Object.keys(params).length}`
+      for (const opt of opts) {
+        if (remaining.toLowerCase().startsWith(opt.toLowerCase())) {
+          params[paramName] = opt
+          remaining = remaining.slice(opt.length).trimStart()
+          break
+        }
+      }
+    } else if (segment.type === 'optional_seq') {
+      const subSegments = _parsePattern(segment.subPattern)
+      const result = _executeMatch(subSegments, remaining)
+      if (result) { Object.assign(params, result.params); remaining = result.remaining }
+    } else if (segment.type === 'seq') {
+      const subSegments = _parsePattern(segment.subPattern)
+      const result = _executeMatch(subSegments, remaining)
+      if (!result) return null
+      Object.assign(params, result.params)
+      remaining = result.remaining
+    } else if (segment.type === 'anyof') {
+      const opts = segment.options ?? []
+      const low = originalText.toLowerCase()
+      if (!opts.some(opt => low.includes(opt.toLowerCase()))) return null
+    } else if (segment.type === 'minletters') {
+      const count = (originalText.match(/[a-zA-Z]/g) ?? []).length
+      if (count < segment.min) return null
+    } else if (segment.type === 'mindigits') {
+      const count = (originalText.match(/\d/g) ?? []).length
+      if (count < segment.min) return null
+    } else if (segment.type === 'msg_start') {
+      if (remaining !== originalText) return null
+    } else if (segment.type === 'msg_end') {
+      if (remaining !== '') return null
     }
   }
 
-  return { match: true, params }
+  return { params, remaining }
+}
+
+function _matchPattern(pattern, text) {
+  if (!pattern) return { match: true, params: {} }
+  const result = _executeMatch(_parsePattern(pattern), text.trim())
+  return result ? { match: true, params: result.params } : null
 }
 
 export function matchTrigger(trigger, msg) {
   if (!trigger.enabled) return null
+  // These types fire via their own mechanisms, not chat messages
+  if (trigger.type === 'obs_source' || trigger.type === 'timer') return null
 
   if (trigger.type === 'command') {
     const tokens = msg.text.trim().split(/\s+/)
@@ -602,7 +700,7 @@ export async function runTriggers(msg, triggers, opts = {}) {
   const {
     sendChatMessage, sendAnnouncement, fetchFollowage, fetchUserByLogin,
     mainUser, botAccount,
-    obsGetSceneItemList, obsSetSourceVisibility, getCurrentScene,
+    obsGetSceneItemList, obsSetSourceVisibility, obsPlayVideoInSource, getCurrentScene,
     globalSceneBlacklist = {}
   } = opts
   const fired = []
@@ -701,9 +799,13 @@ export async function runTriggers(msg, triggers, opts = {}) {
           await obsSetSourceVisibility?.({ sceneName: action.scene ?? null, sourceName: action.source, visible: action.visible ?? true })
           _mainWindow?.webContents.send('chatTriggers:fired', { triggerId: trigger.id, triggerName: trigger.name, action: action.type })
         } else if (action.type === 'play_media') {
-          _mainWindow?.webContents.send('chatTriggers:playMedia', {
-            filePath: action.filePath, device: action.device ?? '', volume: action.volume ?? 1.0
-          })
+          if ((action.mediaType ?? 'audio') === 'video') {
+            await obsPlayVideoInSource?.(action.obsSource, action.filePath)
+          } else {
+            _mainWindow?.webContents.send('chatTriggers:playMedia', {
+              filePath: action.filePath, device: action.device ?? '', volume: action.volume ?? 1.0
+            })
+          }
           _mainWindow?.webContents.send('chatTriggers:fired', { triggerId: trigger.id, triggerName: trigger.name, action: action.type })
         } else if (action.type === 'random_line') {
           let line = ''
@@ -745,4 +847,166 @@ export async function runTriggers(msg, triggers, opts = {}) {
   }
 
   return fired
+}
+
+// ── Timer triggers ─────────────────────────────────────────────────────────
+
+async function _fireTimerTrigger(trigger) {
+  const { sendChatMessage, sendAnnouncement, getChatTriggers, mainUser, botAccount } = _engineOpts
+  const fresh = (getChatTriggers?.() ?? []).find(t => t.id === trigger.id)
+  if (!fresh?.enabled) return
+
+  const ctx = { username: _channel ?? '', displayName: '', channel: _channel ?? '', text: '', params: {} }
+  const response = fresh.responses?.[0]
+  if (!response) return
+
+  for (const action of response.actions ?? []) {
+    if (action.delay > 0) await new Promise(r => setTimeout(r, action.delay * 1000))
+    try {
+      if (action.type === 'send_chat_response') {
+        const text = renderTemplate(action.template ?? '', ctx)
+        if (!text.trim()) continue
+        const mu = typeof mainUser === 'function' ? mainUser() : mainUser
+        const ba = typeof botAccount === 'function' ? botAccount() : botAccount
+        const useBot = action.useBot && ba
+        const senderToken = useBot ? ba.token : null
+        const senderId = useBot ? ba.user?.id : mu?.id
+        if (action.responseMode === 'announcement') {
+          await sendAnnouncement?.(mu?.id, mu?.id, text, action.announcementColor ?? 'primary', senderToken ?? undefined)
+        } else {
+          await sendChatMessage?.(mu?.id, senderId, text, senderToken ?? undefined)
+        }
+        _mainWindow?.webContents.send('chatTriggers:fired', { triggerId: fresh.id, triggerName: fresh.name, action: 'timer', text })
+      }
+    } catch (err) {
+      _mainWindow?.webContents.send('chatTriggers:log', { level: 'error', msg: `Timer action failed for "${fresh.name}": ${err.message}` })
+    }
+  }
+}
+
+function _startTimer(trigger) {
+  const ms = (trigger.interval ?? 15) * (trigger.intervalUnit === 'hours' ? 3600000 : 60000)
+  const handle = setInterval(() => _fireTimerTrigger(trigger), ms)
+  _timerHandles.set(trigger.id, handle)
+}
+
+export function startTimerTriggers(triggers) {
+  for (const t of triggers) {
+    if (t.type === 'timer' && t.enabled && !_timerHandles.has(t.id)) _startTimer(t)
+  }
+}
+
+export function stopTimerTriggers() {
+  for (const handle of _timerHandles.values()) clearInterval(handle)
+  _timerHandles.clear()
+}
+
+export function syncTimerTrigger(trigger) {
+  if (_timerHandles.has(trigger.id)) {
+    clearInterval(_timerHandles.get(trigger.id))
+    _timerHandles.delete(trigger.id)
+  }
+  // Only start if engine is currently connected
+  if (trigger.type === 'timer' && trigger.enabled && _connected) _startTimer(trigger)
+}
+
+// ── Stream-aware activation ────────────────────────────────────────────────
+
+export function getStreamState() { return { ..._streamState } }
+
+function _evaluateActivation(activation, state) {
+  if (!activation || activation.mode !== 'auto') return null
+  const { conditions, logic } = activation
+  const checks = []
+  if (conditions.whenLive) checks.push(state.isLive)
+  if (conditions.gameCategories?.length > 0)
+    checks.push(conditions.gameCategories.some(g => g.toLowerCase() === (state.gameCategory ?? '').toLowerCase()))
+  if (conditions.titleContains?.length > 0)
+    checks.push(conditions.titleContains.some(p => (state.title ?? '').toLowerCase().includes(p.toLowerCase())))
+  if (checks.length === 0) return false
+  return logic === 'or' ? checks.some(Boolean) : checks.every(Boolean)
+}
+
+async function _pollStreamState() {
+  const { fetchStream, getChatTriggers, updateTrigger } = _engineOpts
+  if (!fetchStream || !_username) return
+  const newState = await fetchStream(_username)
+  const prev = _streamState
+  const changed = newState.isLive !== prev.isLive ||
+    newState.gameCategory !== prev.gameCategory ||
+    newState.title !== prev.title
+  _streamState = newState
+  _mainWindow?.webContents.send('stream:stateChanged', newState)
+  if (!changed) return
+
+  const triggers = getChatTriggers?.() ?? []
+  for (const trigger of triggers) {
+    if (trigger.activation?.mode !== 'auto') continue
+    const shouldEnable = _evaluateActivation(trigger.activation, newState)
+    const newActivation = { ...trigger.activation, currentOverride: null }
+    if (trigger.enabled !== shouldEnable || trigger.activation.currentOverride !== null) {
+      updateTrigger?.(trigger.id, { enabled: shouldEnable, activation: newActivation })
+      syncTimerTrigger({ ...trigger, enabled: shouldEnable })
+      _mainWindow?.webContents.send('chatTriggers:activationChanged', { id: trigger.id, enabled: shouldEnable })
+    }
+  }
+}
+
+export function startStreamPolling() {
+  if (_streamPollHandle) return
+  _pollStreamState()
+  _streamPollHandle = setInterval(_pollStreamState, 60000)
+}
+
+export function stopStreamPolling() {
+  if (_streamPollHandle) { clearInterval(_streamPollHandle); _streamPollHandle = null }
+  _streamState = { isLive: false, gameCategory: null, title: null }
+}
+
+// ── OBS source triggers ────────────────────────────────────────────────────
+
+export async function handleOBSSourceChange(event) {
+  const { getChatTriggers, obsGetSceneItemList, sendChatMessage, sendAnnouncement, mainUser, botAccount } = _engineOpts
+  const triggers = (getChatTriggers?.() ?? []).filter(t => t.type === 'obs_source' && t.enabled)
+  if (triggers.length === 0) return
+
+  // Look up source name from sceneItemId
+  const items = await obsGetSceneItemList?.(event.sceneName) ?? []
+  const item = items.find(i => i.sceneItemId === event.sceneItemId)
+  if (!item) return
+
+  for (const trigger of triggers) {
+    const sceneMatch = !trigger.obsScene || trigger.obsScene === event.sceneName
+    const sourceMatch = !trigger.obsSource || trigger.obsSource === item.sourceName
+    const stateMatch = (trigger.obsState === 'visible') === event.sceneItemEnabled
+    if (!sceneMatch || !sourceMatch || !stateMatch) continue
+    if (!checkAndSetCooldowns(trigger, 'obs')) continue
+
+    const ctx = { username: _channel ?? '', displayName: '', channel: _channel ?? '', text: '', params: {} }
+    const response = trigger.responses?.[0]
+    if (!response) continue
+
+    for (const action of response.actions ?? []) {
+      if (action.delay > 0) await new Promise(r => setTimeout(r, action.delay * 1000))
+      try {
+        if (action.type === 'send_chat_response') {
+          const text = renderTemplate(action.template ?? '', ctx)
+          if (!text.trim()) continue
+          const mu = typeof mainUser === 'function' ? mainUser() : mainUser
+          const ba = typeof botAccount === 'function' ? botAccount() : botAccount
+          const useBot = action.useBot && ba
+          const senderToken = useBot ? ba.token : null
+          const senderId = useBot ? ba.user?.id : mu?.id
+          if (action.responseMode === 'announcement') {
+            await sendAnnouncement?.(mu?.id, mu?.id, text, action.announcementColor ?? 'primary', senderToken ?? undefined)
+          } else {
+            await sendChatMessage?.(mu?.id, senderId, text, senderToken ?? undefined)
+          }
+          _mainWindow?.webContents.send('chatTriggers:fired', { triggerId: trigger.id, triggerName: trigger.name, action: 'obs_source', text })
+        }
+      } catch (err) {
+        _mainWindow?.webContents.send('chatTriggers:log', { level: 'error', msg: `OBS action failed for "${trigger.name}": ${err.message}` })
+      }
+    }
+  }
 }
