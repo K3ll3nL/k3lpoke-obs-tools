@@ -83,7 +83,7 @@ export const APP_REGISTRY = [
     defaultRoute: '/chat-triggers',
     routePrefix: '/chat-triggers',
     core: false,
-    version: '0.1.1',
+    version: '0.1.2',
     navItems: [
       { to: '/chat-triggers',          icon: Zap,      label: 'Triggers', end: true },
       { to: '/chat-triggers/settings', icon: Settings, label: 'Settings'              },

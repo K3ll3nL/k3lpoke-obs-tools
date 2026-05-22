@@ -74,19 +74,26 @@ app.whenReady().then(async () => {
 
     // Setup auto-updater (only in packaged builds)
     if (!isDev) {
-      autoUpdater.on('update-available', () => {
-        console.log('Update available detected')
+      console.log('[UPDATER] Starting auto-updater setup...')
+      autoUpdater.on('checking-for-update', () => {
+        console.log('[UPDATER] Checking for updates...')
+      })
+      autoUpdater.on('update-available', (info) => {
+        console.log('[UPDATER] Update available:', info.version)
         win.webContents.send('app:update-available')
       })
-      autoUpdater.on('update-downloaded', () => {
-        console.log('Update downloaded')
+      autoUpdater.on('update-not-available', (info) => {
+        console.log('[UPDATER] No update available. Current:', info.version)
+      })
+      autoUpdater.on('update-downloaded', (info) => {
+        console.log('[UPDATER] Update downloaded:', info.version)
         win.webContents.send('app:update-ready')
       })
       autoUpdater.on('error', (err) => {
-        console.error('Auto-updater error:', err.message)
+        console.error('[UPDATER] Error:', err.message, err.stack)
       })
       autoUpdater.checkForUpdatesAndNotify().catch((err) => {
-        console.error('Update check failed:', err.message)
+        console.error('[UPDATER] Check failed:', err.message, err.stack)
       })
     }
 

@@ -5,3 +5,6 @@ dist/
 *.log
 .claude/
 CLAUDE.*
+cert.pem
+key.pem
+cert.pfx
