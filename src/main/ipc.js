@@ -727,6 +727,10 @@ export async function registerIpcHandlers(mainWindow) {
 
   // ── Updates ────────────────────────────────────────────────────────────────
 
+  handle('app:getVersion', () => {
+    return app.getVersion()
+  })
+
   handle('app:getUpdateState', () => {
     const updateInfo = autoUpdater.updateInfo
     return {

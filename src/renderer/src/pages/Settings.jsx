@@ -20,7 +20,7 @@ export default function Settings({ twitchUser, obsConnected }) {
       if (s.obsPassword != null) setObsPass(s.obsPassword)
     })
 
-    window.api.app.getVersion().then(v => setVersion(v))
+    window.api.app.getVersion().then(r => r.ok && setVersion(r.data))
 
     window.api.app.getUpdateState().then(r => {
       if (r.ok) setUpdateState(r.data)
