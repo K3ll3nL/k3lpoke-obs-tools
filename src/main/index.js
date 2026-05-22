@@ -81,6 +81,8 @@ app.whenReady().then(async () => {
       autoUpdater.on('update-available', (info) => {
         console.log('[UPDATER] Update available:', info.version)
         win.webContents.send('app:update-available')
+        console.log('[UPDATER] Starting download...')
+        autoUpdater.downloadUpdate()
       })
       autoUpdater.on('update-not-available', (info) => {
         console.log('[UPDATER] No update available. Current:', info.version)
