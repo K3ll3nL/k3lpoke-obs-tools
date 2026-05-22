@@ -1,6 +1,7 @@
 import { app, BrowserWindow, shell, session } from 'electron'
 import path from 'path'
 import { fileURLToPath } from 'url'
+import fs from 'fs'
 import { autoUpdater } from 'electron-updater'
 import { initDb, getSetting, getShinyLayoutForScene } from './db.js'
 import { initTwitch } from './twitch.js'
@@ -13,6 +14,12 @@ const isDev = !app.isPackaged
 
 // Set userData path to use package name, not repo folder name
 app.setPath('userData', path.join(app.getPath('appData'), 'k3lpoke-obs-tools'))
+
+const logFile = path.join(app.getPath('userData'), 'updater.log')
+function logToFile(msg) {
+  fs.appendFileSync(logFile, `${new Date().toISOString()} ${msg}\n`)
+  console.log(msg)
+}
 
 let mainWindow
 let autoFetchInterval
@@ -74,37 +81,40 @@ app.whenReady().then(async () => {
 
     // Setup auto-updater (only in packaged builds)
     if (!isDev) {
-      console.log('[UPDATER] Starting auto-updater setup...')
+      logToFile('[UPDATER] Starting auto-updater setup...')
+      autoUpdater.autoDownload = false
       autoUpdater.on('checking-for-update', () => {
-        console.log('[UPDATER] Checking for updates...')
+        logToFile('[UPDATER] Checking for updates...')
       })
       autoUpdater.on('update-available', (info) => {
-        console.log('[UPDATER] Update available:', info.version)
+        logToFile('[UPDATER] Update available: ' + info.version)
+        logToFile('[UPDATER] autoDownload is: ' + autoUpdater.autoDownload)
+        logToFile('[UPDATER] updateInfo: ' + JSON.stringify(info, null, 2))
         win.webContents.send('app:update-available')
-        console.log('[UPDATER] Starting download...')
-
-        autoUpdater.downloadUpdate().then(() => {
-          console.log('[UPDATER] Download completed')
-        }).catch((err) => {
-          console.error('[UPDATER] Download failed:', err.message, err.stack)
-        })
+        logToFile('[UPDATER] Starting download...')
+        try {
+          const result = autoUpdater.downloadUpdate()
+          logToFile('[UPDATER] downloadUpdate() returned: ' + JSON.stringify(result))
+        } catch (err) {
+          logToFile('[UPDATER] downloadUpdate() threw: ' + err.message)
+        }
       })
       autoUpdater.on('update-not-available', (info) => {
-        console.log('[UPDATER] No update available. Current:', info.version)
+        logToFile('[UPDATER] No update available. Current: ' + info.version)
       })
       autoUpdater.on('download-progress', (progress) => {
-        console.log(`[UPDATER] Download progress: ${progress.percent}%`)
+        logToFile(`[UPDATER] Download progress: ${progress.percent}%`)
       })
       autoUpdater.on('update-downloaded', (info) => {
-        console.log('[UPDATER] Update downloaded:', info.version)
+        logToFile('[UPDATER] Update downloaded: ' + info.version)
         win.webContents.send('app:update-ready')
       })
       autoUpdater.on('error', (err) => {
-        console.error('[UPDATER] Error:', err.message, err.stack)
+        logToFile('[UPDATER] Error: ' + err.message + ' ' + err.stack)
         win.webContents.send('app:update-error', { message: err.message })
       })
       autoUpdater.checkForUpdatesAndNotify().catch((err) => {
-        console.error('[UPDATER] Check failed:', err.message, err.stack)
+        logToFile('[UPDATER] Check failed: ' + err.message + ' ' + err.stack)
       })
     }
 

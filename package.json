@@ -49,6 +49,7 @@
       "certificatePassword": ""
     },
     "nsis": {
+      "artifactName": "K3lPoke-OBS-Tools-Setup-${version}.${ext}",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
