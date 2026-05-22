@@ -1,5 +1,5 @@
 import React from 'react'
-import { Bell, ClipboardCheck, Settings, Layers, Monitor, LayoutGrid, MessageSquare, Plus, Zap } from 'lucide-react'
+import { Bell, ClipboardCheck, Settings, Layers, Monitor, LayoutGrid, MessageSquare, Plus, Zap, Copy, Trash2 } from 'lucide-react'
 
 /**
  * Central registry of all K3LPoke apps.
@@ -94,17 +94,29 @@ export const APP_REGISTRY = [
     ])
   },
   {
-    id: 'scene-manager',
-    name: 'Scene Manager',
-    tagline: 'OBS scene management',
+    id: 'scene-arranger',
+    name: 'Scene Arranger',
+    tagline: 'Intelligent OBS scene management',
     description:
-      'Easily adjust OBS scenes, optimize layouts, and streamline your broadcast workflow.',
-    color: '#FF6B6B',
-    gradient: 'from-red-500 to-rose-700',
+      'Stop manually duplicating and tweaking scenes. Scene Arranger analyzes your OBS setup and lets you create scenes from templates, duplicate with smart source swapping, and bulk-clean large scene collections — all with preview and rollback.',
+    color: '#6366f1',
+    gradient: 'from-indigo-500 to-violet-700',
     defaultRoute: '/scenes',
+    routePrefix: '/scenes',
     core: false,
-    version: null,
-    navItems: [],
+    version: '0.1.0',
+    navItems: [
+      { to: '/scenes',           icon: LayoutGrid, label: 'Layout',     end: true },
+      { to: '/scenes/create',    icon: Plus,       label: 'Create'               },
+      { to: '/scenes/duplicate', icon: Copy,       label: 'Duplicate'            },
+      { to: '/scenes/cleanup',   icon: Trash2,     label: 'Clean Up'             },
+    ],
+    image: () => React.createElement('svg', { width: '20', height: '20', viewBox: '0 0 24 24', fill: 'none', stroke: 'white', strokeWidth: '2', strokeLinecap: 'round', strokeLinejoin: 'round' }, [
+      React.createElement('rect', { key: 'r1', x: '3', y: '3', width: '7', height: '7', rx: '1' }),
+      React.createElement('rect', { key: 'r2', x: '14', y: '3', width: '7', height: '7', rx: '1' }),
+      React.createElement('rect', { key: 'r3', x: '14', y: '14', width: '7', height: '7', rx: '1' }),
+      React.createElement('rect', { key: 'r4', x: '3', y: '14', width: '7', height: '7', rx: '1' }),
+    ])
   },
 ]
 

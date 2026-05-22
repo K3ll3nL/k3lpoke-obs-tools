@@ -18,6 +18,9 @@ import ChatTriggerSetup from './pages/ChatTriggerSetup'
 import ChatTriggerList from './pages/ChatTriggerList'
 import ChatTriggerEditor from './pages/ChatTriggerEditor'
 import ChatTriggerSettings from './pages/ChatTriggerSettings'
+import SceneArranger from './pages/SceneArranger'
+import SceneBuilder from './pages/SceneBuilder'
+import SceneCleanup from './pages/SceneCleanup'
 
 export default function App() {
   const [twitchUser, setTwitchUser] = useState(null)
@@ -71,7 +74,7 @@ export default function App() {
   }
 
   const isSetup = !!twitchUser
-  const hidePanel = ['/settings', '/setup', '/marketplace'].includes(pathname) || pathname.startsWith('/shiny') || pathname.startsWith('/chat-triggers')
+  const hidePanel = ['/settings', '/setup', '/marketplace'].includes(pathname) || pathname.startsWith('/shiny') || pathname.startsWith('/chat-triggers') || pathname.startsWith('/scenes')
 
   return (
     <div className="flex h-screen bg-twitch-dark overflow-hidden">
@@ -115,6 +118,10 @@ export default function App() {
           <Route path="/shiny/setup"   element={<ShinySetup obsConnected={obsConnected} />} />
           <Route path="/shiny/devices" element={isSetup ? <ShinyDevices /> : <Navigate to="/setup" />} />
           <Route path="/shiny/layouts" element={isSetup ? <ShinyLayouts /> : <Navigate to="/setup" />} />
+          <Route path="/scenes"           element={isSetup ? <SceneArranger obsConnected={obsConnected} /> : <Navigate to="/setup" />} />
+          <Route path="/scenes/create"    element={isSetup ? <SceneBuilder obsConnected={obsConnected} /> : <Navigate to="/setup" />} />
+          <Route path="/scenes/duplicate" element={isSetup ? <SceneBuilder obsConnected={obsConnected} /> : <Navigate to="/setup" />} />
+          <Route path="/scenes/cleanup"   element={isSetup ? <SceneCleanup obsConnected={obsConnected} /> : <Navigate to="/setup" />} />
           <Route path="*" element={
             <Navigate to={isSetup ? '/updates' : '/setup'} />
           } />

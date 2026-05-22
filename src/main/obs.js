@@ -247,6 +247,136 @@ export async function addBrowserSource({ sceneName, url, width = 1920, height = 
   return { sourceName }
 }
 
+export async function getSceneItemListFull(sceneName) {
+  if (!connected) return []
+  try {
+    const res = await obs.call('GetSceneItemList', { sceneName })
+    if (!Array.isArray(res?.sceneItems)) return []
+    return res.sceneItems.map(i => ({
+      sceneItemId:      i.sceneItemId,
+      sourceName:       i.sourceName,
+      sourceType:       i.sourceType,
+      inputKind:        i.inputKind,
+      isGroup:          i.isGroup,
+      sceneItemEnabled: i.sceneItemEnabled,
+      sceneItemLocked:  i.sceneItemLocked,
+      sceneItemIndex:   i.sceneItemIndex,
+      transform:        i.sceneItemTransform ?? {}
+    }))
+  } catch { return [] }
+}
+
+export async function createScene(sceneName) {
+  if (!connected) throw new Error('OBS not connected')
+  await obs.call('CreateScene', { sceneName })
+}
+
+export async function removeScene(sceneName) {
+  if (!connected) throw new Error('OBS not connected')
+  await obs.call('RemoveScene', { sceneName })
+}
+
+export async function setSceneItemTransform(sceneName, sceneItemId, sceneItemTransform) {
+  if (!connected) throw new Error('OBS not connected')
+  await obs.call('SetSceneItemTransform', { sceneName, sceneItemId, sceneItemTransform })
+}
+
+export async function createSceneItem(sceneName, sourceName) {
+  if (!connected) throw new Error('OBS not connected')
+  const res = await obs.call('CreateSceneItem', { sceneName, sourceName, sceneItemEnabled: true })
+  return res.sceneItemId
+}
+
+export async function removeSceneItem(sceneName, sceneItemId) {
+  if (!connected) throw new Error('OBS not connected')
+  await obs.call('RemoveSceneItem', { sceneName, sceneItemId })
+}
+
+export async function duplicateSceneItem(sceneName, sceneItemId, destinationSceneName) {
+  if (!connected) throw new Error('OBS not connected')
+  const res = await obs.call('DuplicateSceneItem', { sceneName, sceneItemId, destinationSceneName })
+  return res.sceneItemId
+}
+
+export async function setSceneItemIndex(sceneName, sceneItemId, sceneItemIndex) {
+  if (!connected) throw new Error('OBS not connected')
+  await obs.call('SetSceneItemIndex', { sceneName, sceneItemId, sceneItemIndex })
+}
+
+export async function getInputSettings(inputName) {
+  if (!connected) throw new Error('OBS not connected')
+  const res = await obs.call('GetInputSettings', { inputName })
+  return { settings: res.inputSettings, kind: res.inputKind }
+}
+
+export async function setInputSettingsObs(inputName, inputSettings) {
+  if (!connected) throw new Error('OBS not connected')
+  await obs.call('SetInputSettings', { inputName, inputSettings })
+}
+
+export async function removeInput(inputName) {
+  if (!connected) throw new Error('OBS not connected')
+  await obs.call('RemoveInput', { inputName })
+}
+
+export async function getSceneCollectionList() {
+  if (!connected) throw new Error('OBS not connected')
+  return obs.call('GetSceneCollectionList')
+}
+
+export async function setCurrentSceneCollection(name) {
+  if (!connected) throw new Error('OBS not connected')
+  await obs.call('SetCurrentSceneCollection', { sceneCollectionName: name })
+}
+
+export async function createSceneCollection(name) {
+  if (!connected) throw new Error('OBS not connected')
+  await obs.call('CreateSceneCollection', { sceneCollectionName: name })
+}
+
+export async function getGroupSceneItemList(groupName) {
+  if (!connected) return []
+  try {
+    const res = await obs.call('GetGroupSceneItemList', { sceneName: groupName })
+    if (!Array.isArray(res?.sceneItems)) return []
+    return res.sceneItems.map(i => i.sourceName).filter(Boolean)
+  } catch { return [] }
+}
+
+export async function removeInputFull(inputName) {
+  if (!connected) throw new Error('OBS not connected')
+  // Remove all scene items referencing this input (including inside groups) before deleting
+  try {
+    const scenesRes = await obs.call('GetSceneList')
+    for (const scene of scenesRes.scenes ?? []) {
+      let items
+      try { items = (await obs.call('GetSceneItemList', { sceneName: scene.sceneName })).sceneItems ?? [] }
+      catch { continue }
+      for (const item of items) {
+        if (item.sourceName === inputName) {
+          try { await obs.call('RemoveSceneItem', { sceneName: scene.sceneName, sceneItemId: item.sceneItemId }) } catch {}
+        }
+        if (item.isGroup) {
+          let groupItems
+          try { groupItems = (await obs.call('GetGroupSceneItemList', { sceneName: item.sourceName })).sceneItems ?? [] }
+          catch { continue }
+          for (const gi of groupItems) {
+            if (gi.sourceName === inputName) {
+              try { await obs.call('RemoveSceneItem', { sceneName: item.sourceName, sceneItemId: gi.sceneItemId }) } catch {}
+            }
+          }
+        }
+      }
+    }
+  } catch {}
+  // Workaround for OBS 32.0.3+ bug: RemoveInput returns success but audio sources aren't
+  // destroyed because the audio mixer holds a reference. Releasing audio first forces cleanup.
+  try { await obs.call('SetInputMute', { inputName, inputMuted: true }) } catch {}
+  try { await obs.call('SetInputAudioMonitorType', { inputName, monitorType: 'OBS_MONITORING_TYPE_NONE' }) } catch {}
+  try { await obs.call('SetInputAudioTracks', { inputName, inputAudioTracks: { '1': false, '2': false, '3': false, '4': false, '5': false, '6': false } }) } catch {}
+  await obs.call('RemoveInput', { inputName })
+}
+
 export async function checkChatTriggersPlayer(sceneName) {
   if (!connected) return { exists: false }
   try {

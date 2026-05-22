@@ -184,5 +184,20 @@ contextBridge.exposeInMainWorld('api', {
       getState: () => invoke('stream:getState'),
       onStateChanged: (cb) => ipcRenderer.on('stream:stateChanged', (_, d) => cb(d)),
     },
+  },
+
+  // Scene Arranger
+  scenes: {
+    getAll:           ()                                   => invoke('scenes:getAll'),
+    getSources:       ()                                   => invoke('scenes:getSources'),
+    getUsedSources:   ()                                   => invoke('scenes:getUsedSources'),
+    create:           (sceneName)                          => invoke('scenes:create', { sceneName }),
+    remove:           (sceneName)                          => invoke('scenes:remove', { sceneName }),
+    duplicate:        (sourceName, destName, replacements) => invoke('scenes:duplicate', { sourceName, destName, replacements }),
+    bulkReplace:      (oldSource, newSource, sceneNames)   => invoke('scenes:bulkReplace', { oldSource, newSource, sceneNames }),
+    setTransform:     (sceneName, sceneItemId, transform)   => invoke('scenes:setTransform', { sceneName, sceneItemId, transform }),
+    getInputSettings: (inputName)                          => invoke('scenes:getInputSettings', { inputName }),
+    setInputSettings: (inputName, settings)                => invoke('scenes:setInputSettings', { inputName, settings }),
+    removeSource:     (inputName)                          => invoke('scenes:removeSource', { inputName }),
   }
 })

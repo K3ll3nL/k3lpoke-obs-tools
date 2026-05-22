@@ -1,4 +1,6 @@
 import { ipcMain, app, dialog } from 'electron'
+import fs from 'fs'
+import path from 'path'
 import { autoUpdater } from 'electron-updater'
 import {
   initTwitch, getTwitchState, setClientId, startOAuthFlow, logout,
@@ -7,7 +9,7 @@ import {
   sendChatMessage, sendAnnouncement, sendWhisper, validateBotTokenScopes, fetchFollowage as fetchFollowageApi, fetchCurrentStream, searchCategories,
   fetchCustomRewards,
 } from './twitch.js'
-import { connectOBS, disconnectOBS, isConnected, getSceneList, addBrowserSource, switchScene, getSourceList, getSceneItemList, showDeviceInScene, setSourceVisibility, playVideoInSource, getCurrentScene, checkChatTriggersPlayer, onSceneItemEnableStateChanged } from './obs.js'
+import { connectOBS, disconnectOBS, isConnected, getSceneList, addBrowserSource, switchScene, getSourceList, getSceneItemList, showDeviceInScene, setSourceVisibility, playVideoInSource, getCurrentScene, checkChatTriggersPlayer, onSceneItemEnableStateChanged, getSceneItemListFull, createScene, removeScene, setSceneItemTransform, createSceneItem, removeSceneItem, duplicateSceneItem, setSceneItemIndex, getInputSettings, setInputSettingsObs, removeInput, getGroupSceneItemList, removeInputFull, getSceneCollectionList, setCurrentSceneCollection, createSceneCollection } from './obs.js'
 import {
   getClipsByStatus, getAllClips, getNewClips, setClipStatus, bulkSetStatus, removeClip, reorderQueue,
   upsertClip, clipExists, getChannels, upsertChannel, removeChannel,
@@ -285,6 +287,154 @@ export async function registerIpcHandlers(mainWindow) {
 
   handle('obs:setSourceVisibility', async ({ sceneName, sourceName, visible }) => {
     return setSourceVisibility({ sceneName, sourceName, visible })
+  })
+
+  // ── Scene Arranger ────────────────────────────────────────────────────────
+  handle('scenes:getAll', async () => {
+    const { scenes } = await getSceneList()
+    const BATCH = 8
+    const results = []
+    for (let i = 0; i < scenes.length; i += BATCH) {
+      const batch = scenes.slice(i, i + BATCH)
+      const batchResults = await Promise.all(
+        batch.map(async name => ({ name, items: await getSceneItemListFull(name) }))
+      )
+      results.push(...batchResults)
+    }
+    return results
+  })
+
+  handle('scenes:getSources', async () => getSourceList())
+
+  handle('scenes:getUsedSources', async () => {
+    const { scenes } = await getSceneList()
+    const used = new Set()
+    await Promise.all(scenes.map(async name => {
+      const items = await getSceneItemListFull(name)
+      for (const item of items) {
+        used.add(item.sourceName)
+        if (item.isGroup) {
+          const groupNames = await getGroupSceneItemList(item.sourceName)
+          groupNames.forEach(n => used.add(n))
+        }
+      }
+    }))
+    return [...used]
+  })
+
+  handle('scenes:create', async ({ sceneName }) => {
+    await createScene(sceneName)
+    return { created: sceneName }
+  })
+
+  handle('scenes:remove', async ({ sceneName }) => {
+    await removeScene(sceneName)
+    return { removed: sceneName }
+  })
+
+  handle('scenes:duplicate', async ({ sourceName, destName, replacements = {} }) => {
+    await createScene(destName)
+    const items = await getSceneItemListFull(sourceName)
+    const sorted = [...items].sort((a, b) => a.sceneItemIndex - b.sceneItemIndex)
+    const errors = []
+    for (const item of sorted) {
+      const targetSource = replacements[item.sourceName] ?? item.sourceName
+      try {
+        if (targetSource === item.sourceName) {
+          await duplicateSceneItem(sourceName, item.sceneItemId, destName)
+        } else {
+          const newId = await createSceneItem(destName, targetSource)
+          if (item.transform && Object.keys(item.transform).length > 0) {
+            await setSceneItemTransform(destName, newId, item.transform).catch(() => {})
+          }
+        }
+      } catch (err) {
+        errors.push({ source: item.sourceName, error: err.message })
+      }
+    }
+    return { created: destName, errors }
+  })
+
+  handle('scenes:bulkReplace', async ({ oldSource, newSource, sceneNames }) => {
+    const results = []
+    for (const sceneName of sceneNames) {
+      try {
+        const items = await getSceneItemListFull(sceneName)
+        const matches = items.filter(i => i.sourceName === oldSource)
+        for (const item of matches) {
+          const newId = await createSceneItem(sceneName, newSource)
+          if (item.transform && Object.keys(item.transform).length > 0) {
+            await setSceneItemTransform(sceneName, newId, item.transform).catch(() => {})
+          }
+          await setSceneItemIndex(sceneName, newId, item.sceneItemIndex).catch(() => {})
+          await removeSceneItem(sceneName, item.sceneItemId)
+        }
+        results.push({ sceneName, replaced: matches.length, success: true })
+      } catch (err) {
+        results.push({ sceneName, replaced: 0, success: false, error: err.message })
+      }
+    }
+    return results
+  })
+
+  handle('scenes:setTransform', async ({ sceneName, sceneItemId, transform }) => setSceneItemTransform(sceneName, sceneItemId, transform))
+  handle('scenes:getInputSettings', async ({ inputName }) => getInputSettings(inputName))
+  handle('scenes:setInputSettings', async ({ inputName, settings }) => setInputSettingsObs(inputName, settings))
+  handle('scenes:removeSource', async ({ inputName }) => {
+    const sources = await getSourceList()
+    const kind = sources.find(s => s.name === inputName)?.kind ?? 'unknown'
+
+    if (kind === 'group') {
+      await removeScene(inputName)
+    } else {
+      await removeInputFull(inputName)
+    }
+
+    await new Promise(r => setTimeout(r, 400))
+    if (!( await getSourceList()).some(s => s.name === inputName)) return
+
+    // OBS 32.0.3+ bug: RemoveInput returns success but audio sources persist in live memory.
+    // Fix: force OBS to save the collection to disk, edit the JSON to strip the ghost,
+    // then reload the collection from the clean file.
+    const colRes = await getSceneCollectionList()
+    const current = colRes.currentSceneCollectionName
+    const scenesDir = path.join(app.getPath('home'), 'AppData', 'Roaming', 'obs-studio', 'basic', 'scenes')
+    const colPath = path.join(scenesDir, `${current}.json`)
+    const TEMP = '__k3lpoke_cleanup_temp'
+    let createdTemp = false
+
+    // Switch away — forces OBS to save the current collection to disk
+    const others = colRes.sceneCollections.filter(c => c !== current)
+    if (others.length > 0) {
+      await setCurrentSceneCollection(others[0])
+    } else {
+      await createSceneCollection(TEMP)
+      createdTemp = true
+    }
+    await new Promise(r => setTimeout(r, 1000))
+
+    // Edit the saved JSON to remove the ghost source
+    if (fs.existsSync(colPath)) {
+      try {
+        const data = JSON.parse(fs.readFileSync(colPath, 'utf8'))
+        data.sources = (data.sources ?? []).filter(s => !(s.name === inputName && s.id !== 'scene'))
+        fs.writeFileSync(colPath, JSON.stringify(data, null, 4), 'utf8')
+      } catch {}
+    }
+
+    // Switch back — reloads from the (now clean) JSON
+    await setCurrentSceneCollection(current)
+    await new Promise(r => setTimeout(r, 1000))
+
+    // Clean up temp collection file so it disappears from OBS after restart
+    if (createdTemp) {
+      try { fs.unlinkSync(path.join(scenesDir, `${TEMP}.json`)) } catch {}
+    }
+
+    // Final verify
+    if ((await getSourceList()).some(s => s.name === inputName)) {
+      throw new Error(`Could not delete "${inputName}". Try deleting it manually in OBS.`)
+    }
   })
 
   // ── App utilities ─────────────────────────────────────────────────────────
