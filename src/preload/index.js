@@ -164,17 +164,21 @@ contextBridge.exposeInMainWorld('api', {
     reauth:      ()                => invoke('chatTriggers:reauth'),
 
     getBotAccount: ()              => invoke('chatTriggers:getBotAccount'),
+    getBotScopes:  ()              => invoke('chatTriggers:getBotScopes'),
     loginBot:      ()              => invoke('chatTriggers:loginBot'),
     logoutBot:     ()              => invoke('chatTriggers:logoutBot'),
 
-    testMessage: (text, username)  => invoke('chatTriggers:testMessage', { text, username }),
+    testMessage:      (text, username)  => invoke('chatTriggers:testMessage', { text, username }),
+    testTrigger:      (trigger, text, username) => invoke('chatTriggers:testTrigger', { trigger, text, username }),
+    getCustomRewards: ()                => invoke('chatTriggers:getCustomRewards'),
 
-    onStatus:             (cb) => ipcRenderer.on('chatTriggers:status',           (_, d) => cb(d)),
-    onFired:              (cb) => ipcRenderer.on('chatTriggers:fired',            (_, d) => cb(d)),
-    onLog:                (cb) => ipcRenderer.on('chatTriggers:log',              (_, d) => cb(d)),
-    onMessage:            (cb) => ipcRenderer.on('chatTriggers:message',          (_, d) => cb(d)),
-    onPlayMedia:          (cb) => ipcRenderer.on('chatTriggers:playMedia',        (_, d) => cb(d)),
-    onActivationChanged:  (cb) => ipcRenderer.on('chatTriggers:activationChanged',(_, d) => cb(d)),
+    onStatus:             (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('chatTriggers:status',           h); return () => ipcRenderer.removeListener('chatTriggers:status',           h) },
+    onFired:              (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('chatTriggers:fired',            h); return () => ipcRenderer.removeListener('chatTriggers:fired',            h) },
+    onLog:                (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('chatTriggers:log',              h); return () => ipcRenderer.removeListener('chatTriggers:log',              h) },
+    onMessage:            (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('chatTriggers:message',          h); return () => ipcRenderer.removeListener('chatTriggers:message',          h) },
+    onPlayMedia:          (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('chatTriggers:playMedia',        h); return () => ipcRenderer.removeListener('chatTriggers:playMedia',        h) },
+    onActivationChanged:  (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('chatTriggers:activationChanged',h); return () => ipcRenderer.removeListener('chatTriggers:activationChanged',h) },
+    onRedemption:         (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('chatTriggers:redemption',       h); return () => ipcRenderer.removeListener('chatTriggers:redemption',       h) },
 
     stream: {
       getState: () => invoke('stream:getState'),

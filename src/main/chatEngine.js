@@ -1,5 +1,6 @@
 import WebSocket from 'ws'
 import fs from 'fs'
+import { createEventSubSubscription } from './twitch.js'
 
 // ── IRC connection ─────────────────────────────────────────────────────────
 
@@ -16,12 +17,22 @@ const _connHandlers = []
 
 // Timer and OBS source trigger state
 let _engineOpts = {}
-const _timerHandles = new Map() // triggerId -> intervalHandle
+const _timerHandles = new Map()       // triggerId -> intervalHandle
+const _streamStartHandles = new Map() // triggerId -> timeoutHandle
+let _streamWentLiveAt = null          // Date.now() when stream went live
 
 // ── Stream state polling ───────────────────────────────────────────────────
 
 let _streamState = { isLive: false, gameCategory: null, title: null }
 let _streamPollHandle = null
+
+// ── EventSub (channel point redeems) ──────────────────────────────────────
+
+let _eventSubWs = null
+let _eventSubReconnectTimer = null
+let _broadcasterId = null
+let _botBroadcasterId = null
+let _botToken = null
 
 export function onChatMessage(cb) { _msgHandlers.push(cb) }
 export function onConnectionChange(cb) { _connHandlers.push(cb) }
@@ -29,12 +40,16 @@ export function setEngineWindow(win) { _mainWindow = win }
 export function getChatEngineStatus() { return { connected: _connected, channel: _channel } }
 export function setEngineOpts(opts) { _engineOpts = opts }
 
-export function startChatEngine(username, token, channelName) {
+export function startChatEngine(username, token, channelName, broadcasterId, botBroadcasterId, botToken) {
   _username = username?.toLowerCase()
   _token = token
   _channel = channelName?.toLowerCase()
+  _broadcasterId = broadcasterId ?? null
+  _botBroadcasterId = botBroadcasterId ?? null
+  _botToken = botToken ?? null
   stopChatEngine()
   _connect()
+  _connectEventSub()
 }
 
 export function stopChatEngine() {
@@ -45,6 +60,7 @@ export function stopChatEngine() {
     _connHandlers.forEach(cb => cb({ connected: false }))
     _mainWindow?.webContents.send('chatTriggers:status', { connected: false })
   }
+  _stopEventSub()
 }
 
 function _connect() {
@@ -132,6 +148,108 @@ function _parseLine(line) {
   }
 }
 
+// ── EventSub WebSocket ─────────────────────────────────────────────────────
+
+function _connectEventSub() {
+  if (!_token || !_broadcasterId) return
+  _eventSubWs = new WebSocket('wss://eventsub.wss.twitch.tv/ws')
+
+  _eventSubWs.on('message', async (raw) => {
+    let msg
+    try { msg = JSON.parse(raw.toString()) } catch { return }
+    const type = msg.metadata?.message_type
+    if (type === 'session_welcome') {
+      const sessionId = msg.payload?.session?.id
+      if (!sessionId) return
+      await createEventSubSubscription(sessionId, _broadcasterId, _token)
+      if (_botBroadcasterId && _botToken) {
+        await createEventSubSubscription(sessionId, _botBroadcasterId, _botToken)
+      }
+    } else if (type === 'notification') {
+      const event = msg.payload?.event
+      if (event) _handleRedemption(event)
+    }
+  })
+
+  _eventSubWs.on('close', () => {
+    _eventSubReconnectTimer = setTimeout(_connectEventSub, 5000)
+  })
+
+  _eventSubWs.on('error', () => {})
+}
+
+function _stopEventSub() {
+  if (_eventSubReconnectTimer) { clearTimeout(_eventSubReconnectTimer); _eventSubReconnectTimer = null }
+  if (_eventSubWs) { _eventSubWs.removeAllListeners(); try { _eventSubWs.close() } catch {} ; _eventSubWs = null }
+}
+
+async function _handleRedemption(event) {
+  const { getChatTriggers, sendChatMessage, sendAnnouncement, sendWhisper, mainUser, botAccount } = _engineOpts
+  const triggers = (getChatTriggers?.() ?? []).filter(t => t.type === 'channel_point' && t.enabled)
+  if (triggers.length === 0) return
+
+  const redemption = {
+    username: event.user_login ?? '',
+    displayName: event.user_name ?? event.user_login ?? '',
+    userId: event.user_id ?? '',
+    rewardId: event.reward?.id ?? '',
+    rewardTitle: event.reward?.title ?? '',
+    rewardCost: event.reward?.cost ?? 0,
+    userInput: event.user_input ?? '',
+  }
+
+  _mainWindow?.webContents.send('chatTriggers:redemption', redemption)
+  _recentRedemptions[redemption.rewardId] = Date.now()
+
+  for (const trigger of triggers) {
+    if (!trigger.enabled) continue
+    const rewardIdMatch = !trigger.rewardId || trigger.rewardId === redemption.rewardId
+    if (!rewardIdMatch) continue
+    if (!checkAndSetCooldowns(trigger, redemption.username)) continue
+
+    const ctx = {
+      username: redemption.username,
+      displayName: redemption.displayName,
+      userId: redemption.userId,
+      channel: _channel ?? '',
+      text: redemption.userInput,
+      params: {
+        redeem_title: redemption.rewardTitle,
+        redeem_input: redemption.userInput,
+        redeem_cost: String(redemption.rewardCost),
+      },
+    }
+
+    const response = trigger.responses?.[0]
+    if (!response) continue
+
+    for (const action of response.actions ?? []) {
+      if (action.delay > 0) await new Promise(r => setTimeout(r, action.delay * 1000))
+      try {
+        if (action.type === 'send_chat_response') {
+          const text = renderTemplate(action.template ?? '', ctx)
+          if (!text.trim()) continue
+          const mu = typeof mainUser === 'function' ? mainUser() : mainUser
+          const ba = typeof botAccount === 'function' ? botAccount() : botAccount
+          const useBot = action.useBot && ba
+          const senderToken = useBot ? ba.token : null
+          const senderId = useBot ? ba.user?.id : mu?.id
+          if (action.responseMode === 'announcement') {
+            await sendAnnouncement?.(mu?.id, senderId, text, action.announcementColor ?? 'primary', senderToken ?? undefined)
+          } else if (action.responseMode === 'whisper') {
+            if (ctx.userId) await sendWhisper?.(senderId, ctx.userId, text, senderToken ?? undefined)
+          } else {
+            await sendChatMessage?.(mu?.id, senderId, text, senderToken ?? undefined)
+          }
+          _mainWindow?.webContents.send('chatTriggers:fired', { triggerId: trigger.id, triggerName: trigger.name, action: 'channel_point', text })
+        }
+      } catch (err) {
+        _mainWindow?.webContents.send('chatTriggers:log', { level: 'error', msg: `Redeem action failed for "${trigger.name}": ${err.message}` })
+      }
+    }
+  }
+}
+
 // ── Pattern parsing and matching ──────────────────────────────────────────
 
 function _parsePattern(pattern) {
@@ -174,9 +292,10 @@ function _parsePattern(pattern) {
       } else if (parts[0] === 'seq') {
         try {
           // format: seq|LABEL|ENCODED (new) or seq|ENCODED (old)
+          const label = parts.length >= 3 ? parts[1] : ''
           const encoded = parts.length >= 3 ? parts[2] : parts[1]
           const subPattern = decodeURIComponent(encoded || '')
-          segments.push({ type: 'seq', subPattern })
+          segments.push({ type: 'seq', name: label || undefined, subPattern })
         } catch {}
       } else if (parts[0] === 'anyof') {
         segments.push({ type: 'anyof', options: parts.slice(1).filter(Boolean) })
@@ -195,7 +314,7 @@ function _parsePattern(pattern) {
       while (textEnd < pattern.length && pattern.slice(textEnd, textEnd + 2) !== '@{') {
         textEnd++
       }
-      const text = pattern.slice(i, textEnd)
+      const text = pattern.slice(i, textEnd).replace(/ /g, ' ')
       if (text) segments.push({ type: 'text', value: text })
       i = textEnd
     }
@@ -297,14 +416,151 @@ function _executeMatch(segments, text) {
 
 function _matchPattern(pattern, text) {
   if (!pattern) return { match: true, params: {} }
-  const result = _executeMatch(_parsePattern(pattern), text.trim())
+  const result = _executeMatch(_parsePattern(pattern), text.trim().replace(/ /g, ' '))
   return result ? { match: true, params: result.params } : null
+}
+
+export function testTriggerMatch(trigger, text) {
+  const fakeMsg = { username: 'testuser', displayName: 'testuser', userId: '0', text, badges: {}, isMod: false, isSubscriber: false, isVip: false, isBroadcaster: false }
+  return matchTrigger({ ...trigger, enabled: true }, fakeMsg)
+}
+
+export async function dryRunTrigger(trigger, text, username = 'testuser') {
+  const uname = username.toLowerCase() || 'testuser'
+  const fakeMsg = {
+    username: uname, displayName: username || 'testuser', userId: '0',
+    text, badges: {}, isMod: false, isSubscriber: false, isVip: false, isBroadcaster: false, channel: '',
+  }
+
+  const match = matchTrigger({ ...trigger, enabled: true }, fakeMsg)
+  if (!match) return { matches: false }
+
+  // Check cooldowns without mutating state
+  const now = Date.now()
+  let cooldownBlocked = false, cooldownSecondsLeft = 0
+  if (trigger.cooldown > 0) {
+    const remaining = trigger.cooldown * 1000 - (now - (_globalCooldowns[trigger.id] ?? 0))
+    if (remaining > 0) { cooldownBlocked = true; cooldownSecondsLeft = Math.ceil(remaining / 1000) }
+  }
+  if (!cooldownBlocked && trigger.userCooldown > 0) {
+    const remaining = trigger.userCooldown * 1000 - (now - (_userCooldowns[`${trigger.id}:${uname}`] ?? 0))
+    if (remaining > 0) { cooldownBlocked = true; cooldownSecondsLeft = Math.ceil(remaining / 1000) }
+  }
+
+  // Evaluate considerations without side effects
+  const considerationResults = []
+  let considerationsPass = true
+  let waitMs = 0
+  for (const c of (trigger.considerations ?? [])) {
+    if (!c.enabled) continue
+    let pass = true
+    let note = ''
+    switch (c.type) {
+      case 'chance':
+        note = `${c.percent}% chance (random — not evaluated in test)`
+        break
+      case 'language_filter': {
+        pass = checkLanguageFilter(fakeMsg.text, c)
+        note = pass ? 'passes language filter' : 'blocked by language filter'
+        break
+      }
+      case 'wait':
+        waitMs = Math.max(waitMs, (c.seconds ?? 0) * 1000)
+        note = `adds ${c.seconds}s delay`
+        break
+      case 'chat_activity':
+        note = `requires ${c.messageCount ?? 1} messages between fires (live counter — skipped in test)`
+        break
+      case 'time_of_day': {
+        const nowDate = new Date()
+        const current = nowDate.getHours() * 60 + nowDate.getMinutes()
+        const toMin = t => { const [h, m] = (t ?? '00:00').split(':').map(Number); return h * 60 + m }
+        const mode = c.mode ?? 'between'
+        let timePass
+        if (mode === 'after') timePass = current >= toMin(c.startTime)
+        else if (mode === 'before') timePass = current <= toMin(c.endTime)
+        else {
+          const start = toMin(c.startTime ?? '18:00'), end = toMin(c.endTime ?? '23:59')
+          const inWindow = start <= end ? current >= start && current <= end : current >= start || current <= end
+          timePass = c.invert ? !inWindow : inWindow
+        }
+        pass = timePass
+        note = pass ? 'time of day: currently in window' : 'time of day: currently outside window'
+        break
+      }
+      case 'obs_source':
+        note = `OBS source "${c.source}" state check (live OBS — skipped in test)`
+        break
+      case 'recent_redemption': {
+        const last = _recentRedemptions[c.rewardId ?? ''] ?? 0
+        const withinWindow = last > 0 && (Date.now() - last) < (c.minutes ?? 5) * 60000
+        pass = c.invert ? !withinWindow : withinWindow
+        note = pass
+          ? `reward "${c.rewardId}" ${c.invert ? 'not redeemed' : 'redeemed'} in last ${c.minutes ?? 5} min`
+          : `reward "${c.rewardId}" ${c.invert ? 'was redeemed' : 'not redeemed'} in last ${c.minutes ?? 5} min`
+        break
+      }
+      case 'map_variable':
+      case 'transform_variable':
+        note = `variable transform on "${c.source}"`
+        break
+    }
+    if (!pass && c.type !== 'chance' && c.type !== 'chat_activity' && c.type !== 'obs_source') considerationsPass = false
+    considerationResults.push({ type: c.type, pass, note })
+  }
+
+  // Build ctx
+  const ctx = {
+    username: fakeMsg.username, displayName: fakeMsg.displayName,
+    channel: '', text: fakeMsg.text, params: { ...match.params },
+  }
+  for (const p of trigger.commandParams ?? []) {
+    if (p.optional && !ctx.params[p.name] && p.defaultValue) {
+      ctx.params[p.name] = renderTemplate(p.defaultValue, { ...ctx, params: {} })
+    }
+  }
+  applyVarModifiersFromConsiderations(trigger.considerations, ctx.params)
+
+  // Select response
+  const conditions = trigger.conditions ?? []
+  const responses = trigger.responses ?? []
+  const routing = trigger.routing ?? []
+  let selectedResponse = null
+  if (responses.length > 0) {
+    selectedResponse = await selectResponse(responses, conditions, routing, fakeMsg, {})
+  } else if (trigger.responseGroups) {
+    selectedResponse = await selectResponseGroup(trigger.responseGroups, fakeMsg, {})
+  }
+
+  const actionsToRun = selectedResponse?.actions ?? []
+  const renderedActions = actionsToRun.map(action => {
+    if (action.type === 'send_chat_response') {
+      const text = renderTemplate(action.template ?? '', ctx)
+      return { type: action.type, text, mode: action.responseMode ?? 'normal' }
+    }
+    if (action.type === 'play_media') return { type: action.type, filePath: action.filePath, device: action.device }
+    if (action.type === 'random_line') return { type: action.type, note: 'random line from file/list' }
+    if (action.type === 'obs_set_source') return { type: action.type, source: action.source, scene: action.scene, visible: action.visible }
+    return { type: action.type }
+  })
+
+  return {
+    matches: true,
+    params: match.params,
+    cooldownBlocked,
+    cooldownSecondsLeft,
+    considerations: considerationResults,
+    considerationsPass,
+    selectedResponse: selectedResponse ? { id: selectedResponse.id, name: selectedResponse.name ?? '' } : null,
+    actions: renderedActions,
+    waitMs,
+  }
 }
 
 export function matchTrigger(trigger, msg) {
   if (!trigger.enabled) return null
   // These types fire via their own mechanisms, not chat messages
-  if (trigger.type === 'obs_source' || trigger.type === 'timer') return null
+  if (trigger.type === 'obs_source' || trigger.type === 'timer' || trigger.type === 'channel_point') return null
 
   if (trigger.type === 'command') {
     const tokens = msg.text.trim().split(/\s+/)
@@ -463,9 +719,12 @@ export function renderTemplate(template, ctx) {
     if (varName === 'channel') return ctx.channel ?? ''
     if (varName === 'message') return ctx.text ?? ''
     if (varName === 'followage') return ctx.followage ?? '(unknown)'
+    if (varName === 'redeem_title') return ctx.params?.redeem_title ?? ''
+    if (varName === 'redeem_input') return ctx.params?.redeem_input ?? ''
+    if (varName === 'redeem_cost') return ctx.params?.redeem_cost ?? ''
     // Named parameter from pattern capture/choice
-    if (ctx.params?.[varName]) return ctx.params[varName]
-    return match
+    if (ctx.params && varName in ctx.params) return ctx.params[varName]
+    return `[Can't find a variable named "${varName}". Maybe try re-creating it?]`
   })
 
   // Legacy {varname} format for backward compatibility
@@ -481,12 +740,58 @@ export function renderTemplate(template, ctx) {
   return result
 }
 
+// ── Variable modifiers ─────────────────────────────────────────────────────
+
+function _applyTransform(val, op, args) {
+  const s = String(val ?? '')
+  const n = Number(s)
+  const safe = isNaN(n) ? null : n
+  switch (op) {
+    case 'uppercase':  return s.toUpperCase()
+    case 'lowercase':  return s.toLowerCase()
+    case 'capitalize': return s.charAt(0).toUpperCase() + s.slice(1)
+    case 'trim':         return s.trim()
+    case 'remove_punct': return s.replace(/[^\w\s]/g, '')
+    case 'to_number':  return String(safe ?? 0)
+    case 'to_text':    return s
+    case 'add':        return String(safe !== null ? safe + Number(args.value ?? 0) : s)
+    case 'subtract':   return String(safe !== null ? safe - Number(args.value ?? 0) : s)
+    case 'multiply':   return String(safe !== null ? safe * Number(args.value ?? 1) : s)
+    case 'divide': {
+      const d = Number(args.value ?? 1)
+      return String(safe !== null && d !== 0 ? safe / d : s)
+    }
+    case 'prepend':    return String(args.text ?? '') + s
+    case 'append':     return s + String(args.text ?? '')
+    case 'slice': {
+      const start = Number(args.start ?? 0)
+      const end = (args.end !== '' && args.end !== undefined && args.end !== null) ? Number(args.end) : undefined
+      return s.slice(start, end)
+    }
+    case 'replace':    return s.split(String(args.find ?? '')).join(String(args.with ?? ''))
+    default:           return s
+  }
+}
+
+function applyVarModifiersFromConsiderations(considerations, params) {
+  for (const c of considerations ?? []) {
+    if (!c.enabled || !c.source || !(c.source in params)) continue
+    if (c.type === 'map_variable') {
+      const match = (c.mappings ?? []).find(m => m.from === params[c.source])
+      if (match) params[c.source] = match.to
+    } else if (c.type === 'transform_variable') {
+      params[c.source] = _applyTransform(params[c.source], c.op, c.opArgs ?? {})
+    }
+  }
+}
+
 // ── Cooldown tracking (in-memory) ─────────────────────────────────────────
 
 const _globalCooldowns     = {}  // triggerId -> timestamp
 const _userCooldowns       = {}  // `${triggerId}:${username}` -> timestamp
 const _chatActivityCounters = {} // triggerId -> message count since last fire
 const _sceneOnceUsed       = new Set() // sceneName already suppressed this session
+const _recentRedemptions   = {}  // rewardId -> last redemption timestamp
 
 export function checkAndSetCooldowns(trigger, username) {
   const now = Date.now()
@@ -535,20 +840,51 @@ async function evaluateConsiderations(considerations, msg, triggerId, opts) {
     if (!c.enabled) continue
     switch (c.type) {
       case 'chance':
-        if (Math.random() * 100 >= c.percent) return { pass: false }
+        if (Math.random() * 100 >= c.percent) return { pass: false, blockedBy: `chance (${c.percent}%)` }
         break
       case 'language_filter':
-        if (!checkLanguageFilter(msg.text, c)) return { pass: false }
+        if (!checkLanguageFilter(msg.text, c)) return { pass: false, blockedBy: 'language_filter' }
         break
       case 'wait':
         waitMs = Math.max(waitMs, (c.seconds ?? 0) * 1000)
         break
       case 'chat_activity': {
         const count = _chatActivityCounters[triggerId] ?? 0
-        if (count < (c.messageCount ?? 1)) return { pass: false }
+        if (count < (c.messageCount ?? 1)) return { pass: false, blockedBy: `chat_activity (${count}/${c.messageCount ?? 1} messages)` }
         _chatActivityCounters[triggerId] = 0
         break
       }
+      case 'time_of_day': {
+        const now = new Date()
+        const current = now.getHours() * 60 + now.getMinutes()
+        const toMin = t => { const [h, m] = (t ?? '00:00').split(':').map(Number); return h * 60 + m }
+        const mode = c.mode ?? 'between'
+        let pass
+        if (mode === 'after') {
+          pass = current >= toMin(c.startTime)
+        } else if (mode === 'before') {
+          pass = current <= toMin(c.endTime)
+        } else {
+          const start = toMin(c.startTime ?? '18:00')
+          const end = toMin(c.endTime ?? '23:59')
+          const inWindow = start <= end
+            ? current >= start && current <= end
+            : current >= start || current <= end // crosses midnight
+          pass = c.invert ? !inWindow : inWindow
+        }
+        if (!pass) return { pass: false, blockedBy: 'time_of_day' }
+        break
+      }
+      case 'recent_redemption': {
+        const last = _recentRedemptions[c.rewardId ?? ''] ?? 0
+        const withinWindow = last > 0 && (Date.now() - last) < (c.minutes ?? 5) * 60000
+        const pass = c.invert ? !withinWindow : withinWindow
+        if (!pass) return { pass: false, blockedBy: 'recent_redemption' }
+        break
+      }
+      case 'map_variable':
+      case 'transform_variable':
+        break // applied after ctx.params is built; does not affect pass/fail
       case 'obs_source': {
         const scene = c.scene ?? opts.getCurrentScene?.()
         if (!scene) break
@@ -567,9 +903,9 @@ async function evaluateConsiderations(considerations, msg, triggerId, opts) {
               await new Promise(r => setTimeout(r, 1000))
               if (await poll()) { passed = true; break }
             }
-            if (!passed) return { pass: false }
+            if (!passed) return { pass: false, blockedBy: `obs_source "${c.source}" not ${c.state}` }
           } else {
-            return { pass: false }
+            return { pass: false, blockedBy: `obs_source "${c.source}" not ${c.state}` }
           }
         }
         break
@@ -698,7 +1034,7 @@ function readRandomLine(filePath, randomize = true, weights = []) {
 
 export async function runTriggers(msg, triggers, opts = {}) {
   const {
-    sendChatMessage, sendAnnouncement, fetchFollowage, fetchUserByLogin,
+    sendChatMessage, sendAnnouncement, sendWhisper, fetchFollowage, fetchUserByLogin,
     mainUser, botAccount,
     obsGetSceneItemList, obsSetSourceVisibility, obsPlayVideoInSource, getCurrentScene,
     globalSceneBlacklist = {}
@@ -722,20 +1058,30 @@ export async function runTriggers(msg, triggers, opts = {}) {
     }
 
     const match = matchTrigger(trigger, msg)
-    if (!match) continue
-    if (!checkAndSetCooldowns(trigger, msg.username)) continue
+    if (!match) {
+      _mainWindow?.webContents.send('chatTriggers:log', { level: 'debug', msg: `"${trigger.name}" — no match` })
+      continue
+    }
+    if (!checkAndSetCooldowns(trigger, msg.username)) {
+      _mainWindow?.webContents.send('chatTriggers:log', { level: 'debug', msg: `"${trigger.name}" matched but blocked by cooldown` })
+      continue
+    }
 
     // Evaluate considerations
-    const { pass, waitMs = 0 } = await evaluateConsiderations(
+    const { pass, waitMs = 0, blockedBy } = await evaluateConsiderations(
       trigger.considerations ?? [], msg, trigger.id,
       { getCurrentScene, obsGetSceneItemList }
     )
-    if (!pass) continue
+    if (!pass) {
+      _mainWindow?.webContents.send('chatTriggers:log', { level: 'debug', msg: `"${trigger.name}" matched but blocked by consideration: ${blockedBy ?? 'unknown'}` })
+      continue
+    }
 
     // Build context
     const ctx = {
       username: msg.username,
       displayName: msg.displayName,
+      userId: msg.userId,
       channel: msg.channel,
       text: msg.text,
       params: { ...match.params },
@@ -746,6 +1092,8 @@ export async function runTriggers(msg, triggers, opts = {}) {
         ctx.params[p.name] = renderTemplate(p.defaultValue, { ...ctx, params: {} })
       }
     }
+
+    applyVarModifiersFromConsiderations(trigger.considerations, ctx.params)
 
     // Select response using new structure
     const conditions = trigger.conditions ?? []
@@ -810,9 +1158,9 @@ export async function runTriggers(msg, triggers, opts = {}) {
         } else if (action.type === 'random_line') {
           let line = ''
           if (action.lineMode === 'manual') {
-            const lines = action.lines ?? []
+            const lines = (action.lines ?? []).filter(l => l.trim())
             if (lines.length === 0) continue
-            if (!action.randomize) line = lines[0]
+            if (action.randomize === false) line = lines[0]
             else line = lines[Math.floor(Math.random() * lines.length)]
           } else {
             line = readRandomLine(action.filePath, action.randomize ?? true, action.weights ?? [])
@@ -831,11 +1179,13 @@ export async function runTriggers(msg, triggers, opts = {}) {
           const senderToken = useBot ? botAccount.token : null
           const senderId = useBot ? botAccount.user?.id : mainUser?.id
           if (action.type === 'send_chat_response' && action.responseMode === 'announcement') {
-            await sendAnnouncement?.(mainUser?.id, mainUser?.id, text, action.announcementColor ?? 'primary', senderToken ?? undefined)
+            await sendAnnouncement?.(mainUser?.id, senderId, text, action.announcementColor ?? 'primary', senderToken ?? undefined)
+          } else if (action.type === 'send_chat_response' && action.responseMode === 'whisper') {
+            if (ctx.userId) await sendWhisper?.(senderId, ctx.userId, text, senderToken ?? undefined)
           } else if (action.type === 'send_chat_response') {
             await sendChatMessage?.(mainUser?.id, senderId, text, senderToken ?? undefined)
           }
-          const actionLabel = action.type === 'send_chat_response' ? (action.responseMode === 'announcement' ? 'send_announcement' : 'send_message') : action.type
+          const actionLabel = action.type === 'send_chat_response' ? (action.responseMode === 'announcement' ? 'send_announcement' : action.responseMode === 'whisper' ? 'send_whisper' : 'send_message') : action.type
           _mainWindow?.webContents.send('chatTriggers:fired', { triggerId: trigger.id, triggerName: trigger.name, action: actionLabel, text })
         }
       } catch (err) {
@@ -872,7 +1222,9 @@ async function _fireTimerTrigger(trigger) {
         const senderToken = useBot ? ba.token : null
         const senderId = useBot ? ba.user?.id : mu?.id
         if (action.responseMode === 'announcement') {
-          await sendAnnouncement?.(mu?.id, mu?.id, text, action.announcementColor ?? 'primary', senderToken ?? undefined)
+          await sendAnnouncement?.(mu?.id, senderId, text, action.announcementColor ?? 'primary', senderToken ?? undefined)
+        } else if (action.responseMode === 'whisper') {
+          // no target user in timer context; skip
         } else {
           await sendChatMessage?.(mu?.id, senderId, text, senderToken ?? undefined)
         }
@@ -884,7 +1236,23 @@ async function _fireTimerTrigger(trigger) {
   }
 }
 
+function _scheduleStreamStartTrigger(trigger) {
+  if (_streamStartHandles.has(trigger.id)) return
+  const delayMs = (trigger.streamStartDelay ?? 15) * 60000
+  const elapsed = _streamWentLiveAt !== null ? Date.now() - _streamWentLiveAt : 0
+  const remaining = Math.max(0, delayMs - elapsed)
+  const handle = setTimeout(() => {
+    _streamStartHandles.delete(trigger.id)
+    _fireTimerTrigger(trigger)
+  }, remaining)
+  _streamStartHandles.set(trigger.id, handle)
+}
+
 function _startTimer(trigger) {
+  if ((trigger.timerMode ?? 'interval') === 'stream_start') {
+    if (_streamWentLiveAt !== null) _scheduleStreamStartTrigger(trigger)
+    return
+  }
   const ms = (trigger.interval ?? 15) * (trigger.intervalUnit === 'hours' ? 3600000 : 60000)
   const handle = setInterval(() => _fireTimerTrigger(trigger), ms)
   _timerHandles.set(trigger.id, handle)
@@ -892,13 +1260,16 @@ function _startTimer(trigger) {
 
 export function startTimerTriggers(triggers) {
   for (const t of triggers) {
-    if (t.type === 'timer' && t.enabled && !_timerHandles.has(t.id)) _startTimer(t)
+    if (t.type === 'timer' && t.enabled && !_timerHandles.has(t.id) && !_streamStartHandles.has(t.id)) _startTimer(t)
   }
 }
 
 export function stopTimerTriggers() {
   for (const handle of _timerHandles.values()) clearInterval(handle)
   _timerHandles.clear()
+  for (const handle of _streamStartHandles.values()) clearTimeout(handle)
+  _streamStartHandles.clear()
+  _streamWentLiveAt = null
 }
 
 export function syncTimerTrigger(trigger) {
@@ -906,7 +1277,10 @@ export function syncTimerTrigger(trigger) {
     clearInterval(_timerHandles.get(trigger.id))
     _timerHandles.delete(trigger.id)
   }
-  // Only start if engine is currently connected
+  if (_streamStartHandles.has(trigger.id)) {
+    clearTimeout(_streamStartHandles.get(trigger.id))
+    _streamStartHandles.delete(trigger.id)
+  }
   if (trigger.type === 'timer' && trigger.enabled && _connected) _startTimer(trigger)
 }
 
@@ -940,6 +1314,20 @@ async function _pollStreamState() {
   if (!changed) return
 
   const triggers = getChatTriggers?.() ?? []
+
+  // Handle stream_start timed events
+  if (!prev.isLive && newState.isLive) {
+    _streamWentLiveAt = Date.now()
+    for (const t of triggers) {
+      if (t.type === 'timer' && t.enabled && (t.timerMode ?? 'interval') === 'stream_start')
+        _scheduleStreamStartTrigger(t)
+    }
+  } else if (prev.isLive && !newState.isLive) {
+    _streamWentLiveAt = null
+    for (const handle of _streamStartHandles.values()) clearTimeout(handle)
+    _streamStartHandles.clear()
+  }
+
   for (const trigger of triggers) {
     if (trigger.activation?.mode !== 'auto') continue
     const shouldEnable = _evaluateActivation(trigger.activation, newState)
@@ -998,7 +1386,9 @@ export async function handleOBSSourceChange(event) {
           const senderToken = useBot ? ba.token : null
           const senderId = useBot ? ba.user?.id : mu?.id
           if (action.responseMode === 'announcement') {
-            await sendAnnouncement?.(mu?.id, mu?.id, text, action.announcementColor ?? 'primary', senderToken ?? undefined)
+            await sendAnnouncement?.(mu?.id, senderId, text, action.announcementColor ?? 'primary', senderToken ?? undefined)
+          } else if (action.responseMode === 'whisper') {
+            // no target user in OBS source context; skip
           } else {
             await sendChatMessage?.(mu?.id, senderId, text, senderToken ?? undefined)
           }

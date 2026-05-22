@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { CheckCircle, Circle, Loader, AlertCircle, Bot, LogIn } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 
-const REQUIRED_SCOPES = ['chat:read', 'user:write:chat', 'moderator:manage:announcements']
+const REQUIRED_SCOPES = ['chat:read', 'user:write:chat', 'moderator:manage:announcements', 'channel:read:redemptions', 'user:manage:whispers']
 
 function ScopesStep({ twitchUser, onNext }) {
   const [scopes, setScopes] = useState(null)

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
+import { Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom'
 import Nav from './components/Nav'
 import RightPanel from './components/RightPanel'
 import UndoToast from './components/UndoToast'
@@ -25,6 +25,20 @@ export default function App() {
   const [ready, setReady] = useState(false)
   const [subscribedIds, setSubscribedIds] = useState([])
   const { pathname } = useLocation()
+  const navigate = useNavigate()
+
+  useEffect(() => {
+    return window.api.chatTriggers.onPlayMedia(async ({ filePath, device, volume }) => {
+      if (!filePath) return
+      const audio = new Audio()
+      audio.src = filePath.startsWith('file://') ? filePath : `file:///${filePath.replace(/\\/g, '/')}`
+      audio.volume = volume ?? 1.0
+      if (device && audio.setSinkId) {
+        try { await audio.setSinkId(device) } catch {}
+      }
+      audio.play().catch(() => {})
+    })
+  }, [])
 
   useEffect(() => {
     async function init() {
@@ -41,7 +55,10 @@ export default function App() {
     }
     init()
 
-    window.api.twitch.onAuthChanged(({ user }) => setTwitchUser(user))
+    window.api.twitch.onAuthChanged(({ user }) => {
+      setTwitchUser(user)
+      if (!user) navigate('/setup')
+    })
     window.api.obs.onStatusChanged(({ connected }) => setObsConnected(connected))
   }, [])
 

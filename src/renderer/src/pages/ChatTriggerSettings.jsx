@@ -1,15 +1,18 @@
 import React, { useState, useEffect } from 'react'
 import { Bot, LogOut, Loader, CheckCircle, AlertCircle, RefreshCw } from 'lucide-react'
 
-const REQUIRED_SCOPES = ['chat:read', 'user:write:chat', 'moderator:manage:announcements']
+const REQUIRED_SCOPES = ['chat:read', 'user:write:chat', 'moderator:manage:announcements', 'channel:read:redemptions', 'user:manage:whispers']
+const BOT_REQUIRED_SCOPES = ['chat:read', 'user:write:chat', 'channel:read:redemptions', 'user:manage:whispers', 'moderator:manage:announcements']
 
 export default function ChatTriggerSettings() {
   const [bot, setBot] = useState(null)
   const [scopes, setScopes] = useState(null)
+  const [botScopes, setBotScopes] = useState(null)
   const [loadingBot, setLoadingBot] = useState(true)
   const [loadingScopes, setLoadingScopes] = useState(true)
   const [connectingBot, setConnectingBot] = useState(false)
   const [reauthing, setReauthing] = useState(false)
+  const [reauthorizingBot, setReauthorizingBot] = useState(false)
   const [autoStart, setAutoStart] = useState(false)
   const [botError, setBotError] = useState('')
 
@@ -17,10 +20,12 @@ export default function ChatTriggerSettings() {
     Promise.all([
       window.api.chatTriggers.getBotAccount(),
       window.api.chatTriggers.getScopes(),
+      window.api.chatTriggers.getBotScopes(),
       window.api.settings.get('chatEngineAutoStart'),
-    ]).then(([botRes, scopeRes, autoRes]) => {
+    ]).then(([botRes, scopeRes, botScopeRes, autoRes]) => {
       if (botRes.ok) setBot(botRes.data)
       if (scopeRes.ok) setScopes(scopeRes.data)
+      if (botScopeRes.ok) setBotScopes(botScopeRes.data)
       if (autoRes.ok) setAutoStart(!!autoRes.data)
       setLoadingBot(false)
       setLoadingScopes(false)
@@ -29,18 +34,26 @@ export default function ChatTriggerSettings() {
 
   const missingScopes = scopes ? REQUIRED_SCOPES.filter(s => !scopes.includes(s)) : []
   const hasAllScopes = missingScopes.length === 0
+  const missingBotScopes = bot && botScopes ? BOT_REQUIRED_SCOPES.filter(s => !botScopes.includes(s)) : []
+  const botHasAllScopes = bot ? missingBotScopes.length === 0 : true
 
   async function loginBot() {
     setConnectingBot(true); setBotError('')
     const res = await window.api.chatTriggers.loginBot()
     setConnectingBot(false)
-    if (res.ok) setBot(res.data)
-    else setBotError(res.error ?? 'Failed to connect bot')
+    if (res.ok) {
+      setBot(res.data)
+      const botScopeRes = await window.api.chatTriggers.getBotScopes()
+      if (botScopeRes.ok) setBotScopes(botScopeRes.data)
+    } else {
+      setBotError(res.error ?? 'Failed to connect bot')
+    }
   }
 
   async function logoutBot() {
     await window.api.chatTriggers.logoutBot()
     setBot(null)
+    setBotScopes(null)
   }
 
   async function reauth() {
@@ -51,6 +64,19 @@ export default function ChatTriggerSettings() {
       if (scopeRes.ok) setScopes(scopeRes.data)
     }
     setReauthing(false)
+  }
+
+  async function reauthorizeBot() {
+    setReauthorizingBot(true); setBotError('')
+    const res = await window.api.chatTriggers.loginBot()
+    if (res.ok) {
+      setBot(res.data)
+      const botScopeRes = await window.api.chatTriggers.getBotScopes()
+      if (botScopeRes.ok) setBotScopes(botScopeRes.data)
+    } else {
+      setBotError(res.error ?? 'Failed to re-authorize bot')
+    }
+    setReauthorizingBot(false)
   }
 
   async function toggleAutoStart(val) {
@@ -66,7 +92,7 @@ export default function ChatTriggerSettings() {
 
       <div className="flex-1 overflow-y-auto p-6 space-y-6 max-w-xl">
 
-        {/* Permissions */}
+        {/* Main account permissions */}
         <section className="space-y-3">
           <h2 className="text-twitch-text text-sm font-medium">Twitch Permissions</h2>
           {loadingScopes ? (
@@ -108,18 +134,48 @@ export default function ChatTriggerSettings() {
           {loadingBot ? (
             <div className="flex items-center gap-2 text-twitch-muted text-sm"><Loader size={13} className="animate-spin" /> Loading...</div>
           ) : bot ? (
-            <div className="flex items-center gap-3 p-3 bg-twitch-surface border border-twitch-border rounded-lg">
-              {bot.avatar
-                ? <img src={bot.avatar} alt="" className="w-8 h-8 rounded-full" />
-                : <Bot size={20} className="text-teal-400" />
-              }
-              <div className="flex-1 min-w-0">
-                <p className="text-twitch-text text-sm font-medium">{bot.displayName}</p>
-                <p className="text-twitch-muted text-xs">@{bot.login}</p>
+            <div className="space-y-2">
+              <div className="flex items-center gap-3 p-3 bg-twitch-surface border border-twitch-border rounded-lg">
+                {bot.avatar
+                  ? <img src={bot.avatar} alt="" className="w-8 h-8 rounded-full" />
+                  : <Bot size={20} className="text-teal-400" />
+                }
+                <div className="flex-1 min-w-0">
+                  <p className="text-twitch-text text-sm font-medium">{bot.displayName}</p>
+                  <p className="text-twitch-muted text-xs">@{bot.login}</p>
+                </div>
+                <button onClick={logoutBot} className="flex items-center gap-1.5 text-twitch-muted hover:text-red-400 text-xs transition-colors">
+                  <LogOut size={12} /> Disconnect
+                </button>
               </div>
-              <button onClick={logoutBot} className="flex items-center gap-1.5 text-twitch-muted hover:text-red-400 text-xs transition-colors">
-                <LogOut size={12} /> Disconnect
-              </button>
+
+              {/* Bot scopes */}
+              {botScopes !== null && (
+                <div className="space-y-1.5">
+                  {BOT_REQUIRED_SCOPES.map(scope => {
+                    const granted = botScopes.includes(scope)
+                    return (
+                      <div key={scope} className={`flex items-center gap-2 text-sm px-3 py-1.5 rounded ${granted ? 'bg-green-900/20 text-green-400' : 'bg-red-900/20 text-red-400'}`}>
+                        {granted ? <CheckCircle size={13} /> : <AlertCircle size={13} />}
+                        <code className="font-mono text-xs flex-1">{scope}</code>
+                        {!granted && <span className="text-xs">missing</span>}
+                      </div>
+                    )
+                  })}
+
+                  {!botHasAllScopes && (
+                    <div className="pt-1">
+                      {botError && <p className="text-red-400 text-xs mb-1">{botError}</p>}
+                      <p className="text-twitch-muted text-xs mb-2">Re-authorize the bot account to grant the missing permissions.</p>
+                      <button onClick={reauthorizeBot} disabled={reauthorizingBot}
+                        className="flex items-center gap-2 bg-teal-700 hover:bg-teal-600 disabled:opacity-50 text-white text-sm px-3 py-1.5 rounded-lg transition-colors">
+                        {reauthorizingBot ? <Loader size={13} className="animate-spin" /> : <RefreshCw size={13} />}
+                        {reauthorizingBot ? 'Waiting for browser...' : 'Re-authorize bot'}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           ) : (
             <div className="space-y-2">

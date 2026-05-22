@@ -4,7 +4,8 @@ import {
   initTwitch, getTwitchState, setClientId, startOAuthFlow, logout,
   fetchUserByLogin, fetchClips, getClipVideoUrl, checkClipsExist, fetchClipDetails, searchChannels as searchTwitchChannels,
   validateTokenScopes, startBotOAuthFlow, logoutBot as logoutBotAccount,
-  sendChatMessage, sendAnnouncement, fetchFollowage as fetchFollowageApi, fetchCurrentStream, searchCategories,
+  sendChatMessage, sendAnnouncement, sendWhisper, validateBotTokenScopes, fetchFollowage as fetchFollowageApi, fetchCurrentStream, searchCategories,
+  fetchCustomRewards,
 } from './twitch.js'
 import { connectOBS, disconnectOBS, isConnected, getSceneList, addBrowserSource, switchScene, getSourceList, getSceneItemList, showDeviceInScene, setSourceVisibility, playVideoInSource, getCurrentScene, checkChatTriggersPlayer, onSceneItemEnableStateChanged } from './obs.js'
 import {
@@ -24,7 +25,7 @@ import {
 } from './db.js'
 import {
   startChatEngine, stopChatEngine, getChatEngineStatus, setEngineWindow,
-  runTriggers, matchTrigger, onChatMessage,
+  runTriggers, matchTrigger, testTriggerMatch, dryRunTrigger, onChatMessage,
   setEngineOpts, startTimerTriggers, stopTimerTriggers, syncTimerTrigger, handleOBSSourceChange,
   startStreamPolling, stopStreamPolling, getStreamState,
 } from './chatEngine.js'
@@ -422,6 +423,7 @@ export async function registerIpcHandlers(mainWindow) {
   setEngineOpts({
     sendChatMessage,
     sendAnnouncement,
+    sendWhisper,
     mainUser: () => getTwitchState().user,
     botAccount: () => getChatBotAccount(),
     botUsername: () => getChatBotAccount()?.user?.login?.toLowerCase() ?? null,
@@ -440,6 +442,7 @@ export async function registerIpcHandlers(mainWindow) {
     await runTriggers(msg, triggers, {
       sendChatMessage,
       sendAnnouncement,
+      sendWhisper,
       fetchFollowage: fetchFollowageApi,
       fetchUserByLogin,
       mainUser: state.user,
@@ -487,7 +490,8 @@ export async function registerIpcHandlers(mainWindow) {
   handle('chatTriggers:start', () => {
     const state = getTwitchState()
     if (!state.user || !state.accessToken) throw new Error('Not authenticated with Twitch')
-    startChatEngine(state.user.login, state.accessToken, state.user.login)
+    const bot = getChatBotAccount()
+    startChatEngine(state.user.login, state.accessToken, state.user.login, state.user.id, bot?.user?.id ?? null, bot?.token ?? null)
     startTimerTriggers(getChatTriggers().filter(t => t.enabled))
     startStreamPolling()
     return getChatEngineStatus()
@@ -503,6 +507,7 @@ export async function registerIpcHandlers(mainWindow) {
   handle('stream:getState', () => getStreamState())
 
   handle('chatTriggers:getScopes', () => validateTokenScopes())
+  handle('chatTriggers:getBotScopes', () => validateBotTokenScopes(getChatBotAccount()?.token))
 
   handle('chatTriggers:reauth', async () => {
     const user = await startOAuthFlow()
@@ -528,6 +533,22 @@ export async function registerIpcHandlers(mainWindow) {
     return null
   })
 
+  handle('chatTriggers:getCustomRewards', async () => {
+    const state = getTwitchState()
+    if (!state.user?.id) return []
+    const mainRewards = (await fetchCustomRewards(state.user.id, state.accessToken))
+      .map(r => ({ ...r, channelLogin: state.user.login }))
+    const bot = getChatBotAccount()
+    const botRewards = bot?.user?.id && bot?.token
+      ? (await fetchCustomRewards(bot.user.id, bot.token)).map(r => ({ ...r, channelLogin: bot.user.login }))
+      : []
+    return [...mainRewards, ...botRewards]
+  })
+
+  handle('chatTriggers:testTrigger', ({ trigger, text, username }) => {
+    return dryRunTrigger(trigger, text, username)
+  })
+
   handle('chatTriggers:testMessage', ({ text, username }) => {
     const triggers = getChatTriggers()
     const fakeMsg = {
@@ -548,7 +569,8 @@ export async function registerIpcHandlers(mainWindow) {
   if (getSetting('chatEngineAutoStart')) {
     const state = getTwitchState()
     if (state.user && state.accessToken) {
-      startChatEngine(state.user.login, state.accessToken, state.user.login)
+      const bot = getChatBotAccount()
+      startChatEngine(state.user.login, state.accessToken, state.user.login, state.user.id, bot?.user?.id ?? null, bot?.token ?? null)
       startTimerTriggers(getChatTriggers().filter(t => t.enabled))
     }
   }

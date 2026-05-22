@@ -1,12 +1,12 @@
 import axios from 'axios'
-import { shell } from 'electron'
+import { shell, BrowserWindow } from 'electron'
 import { getSetting, setSetting, setChatBotAccount } from './db.js'
 
 const TWITCH_AUTH_URL = 'https://id.twitch.tv/oauth2/authorize'
 const TWITCH_API = 'https://api.twitch.tv/helix'
 const TWITCH_GQL = 'https://gql.twitch.tv/gql'
 const REDIRECT_URI = 'http://localhost:1102/auth/callback'
-const SCOPES = 'user:read:email chat:read user:write:chat moderator:manage:announcements moderator:read:followers'
+const SCOPES = 'user:read:email chat:read user:write:chat moderator:manage:announcements moderator:read:followers channel:read:redemptions user:manage:whispers'
 const DEFAULT_CLIENT_ID = '0ue4vlu07adeae3lxj3e7euyuhvmyx'
 // Twitch's internal GQL client ID — required for playback token endpoint
 const GQL_CLIENT_ID = 'kimne78kx3ncx6brgo4mv6wki5h1ko'
@@ -61,21 +61,45 @@ export async function startOAuthFlow() {
     `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}` +
     `&response_type=token` +
     `&scope=${encodeURIComponent(SCOPES)}` +
-    `&force_verify=false`
+    `&force_verify=true`
 
   return new Promise((resolve, reject) => {
     _pendingAuthResolve = () => resolve(currentUser)
-    _pendingAuthReject = reject
+    let win = null
 
     const timer = setTimeout(() => {
       _pendingAuthResolve = null
       _pendingAuthReject = null
+      win?.close()
       reject(new Error('Auth timed out'))
     }, 5 * 60 * 1000)
 
-    _pendingAuthReject = (err) => { clearTimeout(timer); reject(err) }
+    _pendingAuthReject = (err) => { clearTimeout(timer); win?.close(); reject(err) }
 
-    shell.openExternal(url)
+    win = new BrowserWindow({
+      width: 500,
+      height: 700,
+      title: 'Connect Twitch Account',
+      webPreferences: {
+        partition: 'main-auth',
+        nodeIntegration: false,
+        contextIsolation: true
+      }
+    })
+    win.loadURL(url)
+    win.on('closed', () => {
+      if (_pendingAuthResolve) {
+        _pendingAuthResolve = null
+        _pendingAuthReject = null
+        clearTimeout(timer)
+        reject(new Error('Auth window closed'))
+      }
+    })
+    win.webContents.on('did-navigate', (_, navUrl) => {
+      if (navUrl.startsWith(REDIRECT_URI)) {
+        setTimeout(() => { if (!win.isDestroyed()) win.close() }, 2000)
+      }
+    })
   })
 }
 
@@ -271,7 +295,7 @@ export async function validateTokenScopes() {
   } catch { return [] }
 }
 
-const BOT_SCOPES = 'chat:read user:write:chat'
+const BOT_SCOPES = 'chat:read user:write:chat channel:read:redemptions user:manage:whispers moderator:manage:announcements'
 
 export async function startBotOAuthFlow() {
   if (!clientId) throw new Error('No Client ID configured')
@@ -285,13 +309,41 @@ export async function startBotOAuthFlow() {
 
   return new Promise((resolve, reject) => {
     _pendingBotResolve = resolve
+    let win = null
     const timer = setTimeout(() => {
       _pendingBotResolve = null
       _pendingBotReject = null
+      win?.close()
       reject(new Error('Bot auth timed out'))
     }, 5 * 60 * 1000)
-    _pendingBotReject = (err) => { clearTimeout(timer); reject(err) }
-    shell.openExternal(url)
+    _pendingBotReject = (err) => { clearTimeout(timer); win?.close(); reject(err) }
+
+    // Use an isolated window with no saved credentials to prevent autofill
+    win = new BrowserWindow({
+      width: 500,
+      height: 700,
+      title: 'Connect Bot Account',
+      webPreferences: {
+        partition: 'bot-auth',
+        nodeIntegration: false,
+        contextIsolation: true
+      }
+    })
+    win.loadURL(url)
+    win.on('closed', () => {
+      if (_pendingBotResolve) {
+        _pendingBotResolve = null
+        _pendingBotReject = null
+        clearTimeout(timer)
+        reject(new Error('Auth window closed'))
+      }
+    })
+    // Close the window ~2s after the callback page loads (token extracted by then)
+    win.webContents.on('did-navigate', (_, navUrl) => {
+      if (navUrl.startsWith(REDIRECT_URI)) {
+        setTimeout(() => { if (!win.isDestroyed()) win.close() }, 2000)
+      }
+    })
   })
 }
 
@@ -303,6 +355,16 @@ async function storeBotToken(token) {
   const botAccount = { token, user }
   setChatBotAccount(botAccount)
   return botAccount
+}
+
+export async function validateBotTokenScopes(botToken) {
+  if (!botToken) return []
+  try {
+    const res = await axios.get('https://id.twitch.tv/oauth2/validate', {
+      headers: { Authorization: `OAuth ${botToken}` }
+    })
+    return res.data.scopes ?? []
+  } catch { return [] }
 }
 
 export function logoutBot() {
@@ -327,6 +389,14 @@ export async function sendAnnouncement(broadcasterId, moderatorId, text, color =
   )
 }
 
+export async function sendWhisper(fromUserId, toUserId, message, token) {
+  await axios.post(
+    `${TWITCH_API}/whispers?from_user_id=${fromUserId}&to_user_id=${toUserId}`,
+    { message: message.slice(0, 500) },
+    { headers: { 'Client-Id': clientId, Authorization: `Bearer ${token ?? accessToken}` } }
+  )
+}
+
 export async function fetchFollowage(userId, broadcasterId) {
   try {
     const res = await apiGet('/channels/followers', { broadcaster_id: broadcasterId, user_id: userId })
@@ -341,6 +411,33 @@ export async function fetchFollowage(userId, broadcasterId) {
     if (days > 0) return `${days} day${days > 1 ? 's' : ''}`
     return 'less than a day'
   } catch { return null }
+}
+
+export async function fetchCustomRewards(broadcasterId, token) {
+  try {
+    const useToken = token ?? accessToken
+    const res = await axios.get(`${TWITCH_API}/channel_points/custom_rewards`, {
+      params: { broadcaster_id: broadcasterId, only_manageable_rewards: false },
+      headers: { 'Client-Id': clientId, Authorization: `Bearer ${useToken}` },
+    })
+    return (res.data?.data ?? []).map(r => ({ id: r.id, title: r.title, cost: r.cost, isEnabled: r.is_enabled }))
+  } catch { return [] }
+}
+
+export async function createEventSubSubscription(sessionId, broadcasterId, token) {
+  try {
+    await axios.post(
+      `${TWITCH_API}/eventsub/subscriptions`,
+      {
+        type: 'channel.channel_points_custom_reward_redemption.add',
+        version: '1',
+        condition: { broadcaster_user_id: broadcasterId },
+        transport: { method: 'websocket', session_id: sessionId },
+      },
+      { headers: { 'Client-Id': clientId, Authorization: `Bearer ${token ?? accessToken}` } }
+    )
+    return true
+  } catch { return false }
 }
 
 export async function getClipVideoUrl(clipId) {

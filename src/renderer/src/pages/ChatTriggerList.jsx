@@ -104,9 +104,10 @@ function stripPattern(pattern) {
 }
 
 function TriggerCard({ trigger, onEdit, onDelete, onToggle }) {
-  const isCommand   = trigger.type === 'command'
-  const isObsSource = trigger.type === 'obs_source'
-  const isTimer     = trigger.type === 'timer'
+  const isCommand      = trigger.type === 'command'
+  const isObsSource    = trigger.type === 'obs_source'
+  const isTimer        = trigger.type === 'timer'
+  const isChannelPoint = trigger.type === 'channel_point'
   const firstAction  = trigger.responses?.[0]?.actions?.[0]
   const extraActions = (trigger.responses?.[0]?.actions?.length ?? 1) - 1
 
@@ -116,7 +117,13 @@ function TriggerCard({ trigger, onEdit, onDelete, onToggle }) {
   } else if (isObsSource) {
     matchSummary = `${trigger.obsSource || 'any source'} → ${trigger.obsState ?? 'visible'}`
   } else if (isTimer) {
-    matchSummary = `every ${trigger.interval ?? 15} ${trigger.intervalUnit ?? 'minutes'}`
+    if ((trigger.timerMode ?? 'interval') === 'stream_start') {
+      matchSummary = `${trigger.streamStartDelay ?? 15} min after stream start`
+    } else {
+      matchSummary = `every ${trigger.interval ?? 15} ${trigger.intervalUnit ?? 'minutes'}`
+    }
+  } else if (isChannelPoint) {
+    matchSummary = trigger.rewardTitle || trigger.rewardId || 'Any reward'
   } else {
     const stripped = stripPattern(trigger.pattern)
     matchSummary = stripped || ''
@@ -125,19 +132,22 @@ function TriggerCard({ trigger, onEdit, onDelete, onToggle }) {
   const badgeCls = isCommand ? 'bg-teal-900/40'
     : isObsSource ? 'bg-amber-900/30'
     : isTimer ? 'bg-blue-900/30'
+    : isChannelPoint ? 'bg-yellow-900/30'
     : 'bg-purple-900/30'
 
   const BadgeIcon = isCommand ? Terminal
     : isObsSource ? Radio
     : isTimer ? Clock
+    : isChannelPoint ? Zap
     : MessageSquare
 
   const badgeIconCls = isCommand ? 'text-teal-400'
     : isObsSource ? 'text-amber-400'
     : isTimer ? 'text-blue-400'
+    : isChannelPoint ? 'text-yellow-400'
     : 'text-purple-400'
 
-  const summaryPrefix = isCommand ? '! ' : isObsSource ? '📡 ' : isTimer ? '⏱ ' : '≈ '
+  const summaryPrefix = isCommand ? '! ' : isObsSource ? '📡 ' : isTimer ? '⏱ ' : isChannelPoint ? '⭐ ' : '≈ '
 
   return (
     <div
@@ -241,7 +251,7 @@ function TriggerCard({ trigger, onEdit, onDelete, onToggle }) {
 // ── Activity log (collapsed by default) ──────────────────────────────────────
 
 function ActivityLog({ logs }) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(true)
   const unread = logs.filter(l => l.level === 'fire').length
 
   return (
@@ -265,7 +275,7 @@ function ActivityLog({ logs }) {
           {logs.length === 0
             ? <p className="text-twitch-muted px-1 py-1">Nothing fired yet.</p>
             : [...logs].reverse().map((log, i) => (
-              <div key={i} className={`px-1.5 py-0.5 rounded ${log.level === 'error' ? 'text-red-400' : log.level === 'fire' ? 'text-teal-400' : 'text-twitch-muted'}`}>
+              <div key={i} className={`px-1.5 py-0.5 rounded ${log.level === 'error' ? 'text-red-400' : log.level === 'fire' ? 'text-teal-400' : log.level === 'msg' ? 'text-twitch-border' : 'text-twitch-muted'}`}>
                 {log.level === 'fire' && '⚡ '}{log.msg}
               </div>
             ))
@@ -332,12 +342,17 @@ export default function ChatTriggerList() {
     }
     init()
 
-    window.api.chatTriggers.onStatus(d => setStatus(d))
-    window.api.chatTriggers.onFired(d => addLog({ level: 'fire', msg: `"${d.triggerName}" fired → ${d.action === 'send_announcement' ? 'announcement' : 'message'}: ${d.text}` }))
-    window.api.chatTriggers.onLog(d => addLog(d))
-    window.api.chatTriggers.onActivationChanged(({ id, enabled }) =>
+    const offStatus  = window.api.chatTriggers.onStatus(d => setStatus(d))
+    const offFired   = window.api.chatTriggers.onFired(d => {
+      const label = d.action === 'send_announcement' ? `announcement: ${d.text}` : d.action === 'play_media' ? 'played audio' : d.action === 'obs_set_source' ? 'OBS source' : d.action === 'random_line' ? `random line: ${d.text}` : `message: ${d.text}`
+      addLog({ level: 'fire', msg: `"${d.triggerName}" fired → ${label}` })
+    })
+    const offLog     = window.api.chatTriggers.onLog(d => addLog(d))
+    const offMessage = window.api.chatTriggers.onMessage(d => addLog({ level: 'msg', msg: `[${d.username}] ${d.text}` }))
+    const offActivation = window.api.chatTriggers.onActivationChanged(({ id, enabled }) =>
       setTriggers(prev => prev.map(t => t.id === id ? { ...t, enabled, activation: { ...t.activation, currentOverride: null } } : t))
     )
+    return () => { offStatus(); offFired(); offLog(); offMessage(); offActivation() }
   }, [addLog])
 
   if (loading) return (

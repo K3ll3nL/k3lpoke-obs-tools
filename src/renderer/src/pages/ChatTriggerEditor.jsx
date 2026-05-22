@@ -4,7 +4,7 @@ import {
   Plus, X, ArrowLeft, Loader, Info, ChevronDown, ChevronUp,
   Bot, Megaphone, AlertTriangle, Dice6, Music, FileText, Eye,
   Percent, Clock, MessageSquare, Filter, Shuffle, ArrowUp, ArrowDown,
-  Radio, Terminal, Zap,
+  Radio, Terminal, Zap, Sun, Gift,
 } from 'lucide-react'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -33,12 +33,16 @@ function emptyCondition(type) {
 function emptyConsideration(type) {
   const base = { id: uid(), type, enabled: true }
   switch (type) {
-    case 'chance':          return { ...base, percent: 100 }
-    case 'language_filter': return { ...base, mode: 'require', words: [], ignoreSpaces: false, ignorePunct: false }
-    case 'wait':            return { ...base, seconds: 0 }
-    case 'chat_activity':   return { ...base, messageCount: 5 }
-    case 'obs_source':      return { ...base, source: '', scene: null, state: 'visible', onFail: 'cancel' }
-    default:                return base
+    case 'chance':            return { ...base, percent: 100 }
+    case 'language_filter':   return { ...base, mode: 'require', words: [], ignoreSpaces: false, ignorePunct: false }
+    case 'wait':              return { ...base, seconds: 0 }
+    case 'chat_activity':     return { ...base, messageCount: 5 }
+    case 'obs_source':        return { ...base, source: '', scene: null, state: 'visible', onFail: 'cancel' }
+    case 'time_of_day':      return { ...base, mode: 'between', startTime: '18:00', endTime: '23:59', invert: false }
+    case 'map_variable':      return { ...base, source: '', mappings: [{ id: uid(), from: '', to: '' }] }
+    case 'transform_variable': return { ...base, source: '', op: 'uppercase', opArgs: {} }
+    case 'recent_redemption':  return { ...base, rewardId: '', minutes: 5, invert: false }
+    default:                  return base
   }
 }
 
@@ -66,9 +70,71 @@ function emptyTrigger() {
   }
 }
 
+function emptyMapping() { return { id: uid(), from: '', to: '' } }
+
+const TRANSFORM_OPS = {
+  text: [
+    { value: 'uppercase',    label: 'Make UPPERCASE',             args: [] },
+    { value: 'lowercase',    label: 'Make lowercase',             args: [] },
+    { value: 'capitalize',   label: 'Capitalize first letter',    args: [] },
+    { value: 'trim',         label: 'Remove extra spaces',        args: [] },
+    { value: 'remove_punct', label: 'Remove punctuation',        args: [] },
+    { value: 'prepend',      label: 'Add text before it',         args: [{ key: 'text', label: 'Text to add', default: '', type: 'text' }] },
+    { value: 'append',       label: 'Add text after it',          args: [{ key: 'text', label: 'Text to add', default: '', type: 'text' }] },
+    { value: 'slice',        label: 'Get characters X through Y', args: [{ key: 'start', label: 'From character #', default: '0', type: 'number' }, { key: 'end', label: 'To character # (blank = end)', default: '', type: 'number', optional: true }] },
+    { value: 'replace',      label: 'Find and replace',           args: [{ key: 'find', label: 'Find', default: '', type: 'text' }, { key: 'with', label: 'Replace with', default: '', type: 'text' }] },
+    { value: 'to_number',    label: 'Convert to a number (0 if not numeric)', args: [] },
+  ],
+  number: [
+    { value: 'add',      label: 'Add',                args: [{ key: 'value', label: 'Amount', default: '0', type: 'number' }] },
+    { value: 'subtract', label: 'Subtract',           args: [{ key: 'value', label: 'Amount', default: '0', type: 'number' }] },
+    { value: 'multiply', label: 'Multiply by',        args: [{ key: 'value', label: 'Amount', default: '1', type: 'number' }] },
+    { value: 'divide',   label: 'Divide by',          args: [{ key: 'value', label: 'Amount', default: '1', type: 'number' }] },
+    { value: 'to_text',  label: 'Convert to text',    args: [] },
+  ],
+}
+
+function findTransformOp(op, kind) {
+  return TRANSFORM_OPS[kind]?.find(o => o.value === op)
+    ?? TRANSFORM_OPS.text.find(o => o.value === op)
+    ?? TRANSFORM_OPS.number.find(o => o.value === op)
+}
+
 function migrateToTemplate(conditions, blocks) {
   if (Array.isArray(conditions) || Array.isArray(blocks)) return [emptySegment('text')]
   return [emptySegment('text')]
+}
+
+function getPatternParamNames(pattern) {
+  if (!pattern) return []
+  const names = new Set()
+  for (const m of pattern.matchAll(/@\{(capture|optional_capture)\|[^|]+\|([^}]+)\}/g)) { if (m[2]) names.add(m[2]) }
+  for (const m of pattern.matchAll(/@\{(choice|optional_choice)\|([^|]+)\|[^}]*\}/g)) { if (m[2]) names.add(m[2]) }
+  // seq: label is the variable name; recurse into the URL-encoded sub-pattern
+  for (const m of pattern.matchAll(/@\{seq\|([^|]*)\|([^}]*)\}/g)) {
+    if (m[1]) names.add(m[1])
+    try { for (const n of getPatternParamNames(decodeURIComponent(m[2]))) names.add(n) } catch {}
+  }
+  // optional_seq: no label, but sub-pattern may have captures
+  for (const m of pattern.matchAll(/@\{optional_seq\|([^}]*)\}/g)) {
+    try { for (const n of getPatternParamNames(decodeURIComponent(m[1]))) names.add(n) } catch {}
+  }
+  return [...names].filter(Boolean)
+}
+
+function getPatternParamTypes(pattern) {
+  if (!pattern) return {}
+  const types = {}
+  for (const m of pattern.matchAll(/@\{(capture|optional_capture)\|(text|number)\|([^}]+)\}/g)) { if (m[3]) types[m[3]] = m[2] }
+  for (const m of pattern.matchAll(/@\{(choice|optional_choice)\|([^|]+)\|[^}]*\}/g)) { if (m[2]) types[m[2]] = 'text' }
+  for (const m of pattern.matchAll(/@\{seq\|([^|]*)\|([^}]*)\}/g)) {
+    if (m[1]) types[m[1]] = 'text'
+    try { Object.assign(types, getPatternParamTypes(decodeURIComponent(m[2]))) } catch {}
+  }
+  for (const m of pattern.matchAll(/@\{optional_seq\|([^}]*)\}/g)) {
+    try { Object.assign(types, getPatternParamTypes(decodeURIComponent(m[1]))) } catch {}
+  }
+  return types
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -101,11 +167,15 @@ const ADVANCED_VARS = [
 ]
 
 const CONSIDERATION_META = {
-  chance:          { label: 'Only run sometimes',   icon: Percent,       color: 'amber' },
-  language_filter: { label: 'Language filter',       icon: Filter,        color: 'blue' },
-  wait:            { label: 'Wait a while',          icon: Clock,         color: 'purple' },
-  chat_activity:   { label: 'Is chat moving?',       icon: MessageSquare, color: 'teal' },
-  obs_source:      { label: 'OBS source state',      icon: Eye,           color: 'blue' },
+  chance:             { label: 'Only run sometimes',     icon: Percent,       color: 'amber' },
+  language_filter:    { label: 'Language filter',         icon: Filter,        color: 'blue' },
+  wait:               { label: 'Wait a while',            icon: Clock,         color: 'purple' },
+  chat_activity:      { label: 'Is chat moving?',         icon: MessageSquare, color: 'teal' },
+  obs_source:         { label: 'OBS source state',        icon: Eye,           color: 'blue' },
+  time_of_day:        { label: 'What time is it?',        icon: Sun,           color: 'amber' },
+  map_variable:       { label: 'Map variable to a value', icon: Shuffle,       color: 'violet' },
+  transform_variable: { label: 'Transform variable',      icon: Zap,           color: 'violet' },
+  recent_redemption:  { label: 'Recent redemption',       icon: Gift,          color: 'rose' },
 }
 
 const COLOR_CLASSES = {
@@ -114,6 +184,7 @@ const COLOR_CLASSES = {
   purple: { chip: 'bg-purple-900/20 border-purple-700/50 text-purple-400', dot: 'bg-purple-400' },
   teal:   { chip: 'bg-teal-900/20 border-teal-700/50 text-teal-400',    dot: 'bg-teal-400' },
   rose:   { chip: 'bg-rose-900/20 border-rose-700/50 text-rose-400',    dot: 'bg-rose-400' },
+  violet: { chip: 'bg-violet-900/20 border-violet-700/50 text-violet-400', dot: 'bg-violet-400' },
 }
 
 // ── UI Primitives ─────────────────────────────────────────────────────────────
@@ -1136,6 +1207,64 @@ function LanguageFilterPanel({ mode, words, ignoreSpaces, ignorePunct, onChange 
   )
 }
 
+// ── ChannelPointTriggerConfig ─────────────────────────────────────────────────
+
+function ChannelPointTriggerConfig({ trigger, patch }) {
+  const [rewards, setRewards] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
+
+  useEffect(() => {
+    setLoading(true)
+    window.api.chatTriggers.getCustomRewards()
+      .then(r => { setRewards(r.ok ? (r.data ?? []) : []); setError(r.ok ? null : 'Could not load rewards.') })
+      .catch(() => setError('Could not load rewards — make sure the engine is authenticated and channel:read:redemptions scope is granted.'))
+      .finally(() => setLoading(false))
+  }, [])
+
+  return (
+    <Card title="Channel Point Reward">
+      {loading && <p className="text-twitch-muted text-xs">Loading rewards…</p>}
+      {error && <p className="text-rose-400 text-xs">{error}</p>}
+      {!loading && !error && (
+        <div className="space-y-3">
+          <div className="flex flex-wrap gap-1.5">
+            <button
+              onClick={() => patch('rewardId', '')}
+              className={`px-3 py-1.5 rounded-lg border text-xs transition-colors ${
+                !trigger.rewardId
+                  ? 'bg-teal-900/30 border-teal-600 text-teal-300'
+                  : 'bg-twitch-surface border-twitch-border text-twitch-muted hover:border-twitch-muted'
+              }`}>
+              Any reward
+            </button>
+            {rewards.map(r => (
+              <button key={`${r.channelLogin}:${r.id}`}
+                onClick={() => { patch('rewardId', r.id); patch('rewardTitle', r.title) }}
+                className={`px-3 py-1.5 rounded-lg border text-xs transition-colors ${
+                  trigger.rewardId === r.id
+                    ? 'bg-teal-900/30 border-teal-600 text-teal-300'
+                    : 'bg-twitch-surface border-twitch-border text-twitch-muted hover:border-twitch-muted'
+                }`}>
+                {r.channelLogin && <span className="mr-1 opacity-50">@{r.channelLogin}</span>}
+                {r.title}
+                <span className="ml-1.5 text-twitch-muted">{r.cost.toLocaleString()} pts</span>
+              </button>
+            ))}
+            {rewards.length === 0 && (
+              <p className="text-twitch-muted text-xs">No custom rewards found on this channel.</p>
+            )}
+          </div>
+          <p className="text-twitch-muted text-xs flex items-start gap-1.5">
+            <Info size={11} className="mt-0.5 shrink-0" />
+            Use <code className="font-mono text-teal-400">{'@{redeem_title}'}</code>, <code className="font-mono text-teal-400">{'@{redeem_input}'}</code>, and <code className="font-mono text-teal-400">{'@{redeem_cost}'}</code> in responses.
+          </p>
+        </div>
+      )}
+    </Card>
+  )
+}
+
 // ── ObsSourceTriggerConfig ────────────────────────────────────────────────────
 
 function ObsSourceTriggerConfig({ trigger, patch }) {
@@ -1195,10 +1324,12 @@ function ObsSourceTriggerConfig({ trigger, patch }) {
 
 // ── ConsiderationRow ──────────────────────────────────────────────────────────
 
-function ConsiderationRow({ consideration, onChange, onRemove, onMoveUp, onMoveDown, canMoveUp, canMoveDown }) {
+function ConsiderationRow({ consideration, onChange, onRemove, onMoveUp, onMoveDown, canMoveUp, canMoveDown, paramNames = [], paramTypes = {} }) {
   const [obsSources, setObsSources] = useState([])
   const [obsScenes, setObsScenes] = useState([])
   const [wordsDraft, setWordsDraft] = useState(null)
+  const [rewards, setRewards] = useState([])
+  const [rewardsLoading, setRewardsLoading] = useState(false)
   const meta = CONSIDERATION_META[consideration.type] ?? { label: consideration.type, icon: Info, color: 'teal' }
   const colors = COLOR_CLASSES[meta.color] ?? COLOR_CLASSES.teal
   const Icon = meta.icon
@@ -1215,6 +1346,15 @@ function ConsiderationRow({ consideration, onChange, onRemove, onMoveUp, onMoveD
     if (consideration.type === 'obs_source' && obsScenes.length === 0) {
       window.api.obs.getScenes().then(r => { if (r?.ok) setObsScenes(r.data?.scenes ?? []) }).catch(() => {})
     }
+  }, [consideration.type])
+
+  useEffect(() => {
+    if (consideration.type !== 'recent_redemption') return
+    setRewardsLoading(true)
+    window.api.chatTriggers.getCustomRewards()
+      .then(r => setRewards(r.ok ? (r.data ?? []) : []))
+      .catch(() => setRewards([]))
+      .finally(() => setRewardsLoading(false))
   }, [consideration.type])
 
   return (
@@ -1353,6 +1493,182 @@ function ConsiderationRow({ consideration, onChange, onRemove, onMoveUp, onMoveD
           </div>
         </div>
       )}
+
+      {consideration.type === 'time_of_day' && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-3">
+            <label className="text-twitch-muted text-xs w-20 shrink-0">Mode</label>
+            <div className="flex gap-2 flex-1">
+              {['between', 'after', 'before'].map(m => (
+                <button key={m} onClick={() => p('mode', m)}
+                  className={`flex-1 text-xs px-2 py-1.5 rounded border transition-colors capitalize ${
+                    (consideration.mode ?? 'between') === m ? 'bg-teal-900/30 border-teal-600 text-teal-400' : 'border-twitch-border text-twitch-muted hover:border-twitch-muted'
+                  }`}>
+                  {m}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {(consideration.mode ?? 'between') !== 'before' && (
+            <div className="flex items-center gap-3">
+              <label className="text-twitch-muted text-xs w-20 shrink-0">{(consideration.mode ?? 'between') === 'after' ? 'After' : 'From'}</label>
+              <input type="time" value={consideration.startTime ?? '18:00'} onChange={e => p('startTime', e.target.value)}
+                className="flex-1 text-xs bg-twitch-surface border border-twitch-border rounded px-2 py-1.5 text-twitch-text focus:outline-none focus:border-teal-600" />
+            </div>
+          )}
+
+          {(consideration.mode ?? 'between') !== 'after' && (
+            <div className="flex items-center gap-3">
+              <label className="text-twitch-muted text-xs w-20 shrink-0">{(consideration.mode ?? 'between') === 'before' ? 'Before' : 'To'}</label>
+              <input type="time" value={consideration.endTime ?? '23:59'} onChange={e => p('endTime', e.target.value)}
+                className="flex-1 text-xs bg-twitch-surface border border-twitch-border rounded px-2 py-1.5 text-twitch-text focus:outline-none focus:border-teal-600" />
+            </div>
+          )}
+
+          {(consideration.mode ?? 'between') === 'between' && (
+            <div className="flex items-center gap-3">
+              <label className="text-twitch-muted text-xs w-20 shrink-0">Pass when</label>
+              <div className="flex gap-2 flex-1">
+                {[['inside', false], ['outside', true]].map(([lbl, val]) => (
+                  <button key={lbl} onClick={() => p('invert', val)}
+                    className={`flex-1 text-xs px-2 py-1.5 rounded border transition-colors capitalize ${
+                      consideration.invert === val ? 'bg-teal-900/30 border-teal-600 text-teal-400' : 'border-twitch-border text-twitch-muted hover:border-twitch-muted'
+                    }`}>
+                    {lbl} window
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {consideration.type === 'recent_redemption' && (
+        <div className="space-y-2">
+          <div className="space-y-1.5">
+            <label className="text-twitch-muted text-xs">Reward</label>
+            {rewardsLoading && <p className="text-twitch-muted text-xs">Loading rewards…</p>}
+            {!rewardsLoading && (
+              <div className="flex flex-wrap gap-1.5">
+                {rewards.map(r => (
+                  <button key={`${r.channelLogin}:${r.id}`}
+                    onClick={() => { p('rewardId', r.id); p('rewardTitle', r.title) }}
+                    className={`px-2.5 py-1 rounded-lg border text-xs transition-colors ${
+                      consideration.rewardId === r.id
+                        ? 'bg-teal-900/30 border-teal-600 text-teal-300'
+                        : 'bg-twitch-surface border-twitch-border text-twitch-muted hover:border-twitch-muted'
+                    }`}>
+                    {r.channelLogin && <span className="mr-1 opacity-50">@{r.channelLogin}</span>}
+                    {r.title}
+                  </button>
+                ))}
+                {rewards.length === 0 && (
+                  <p className="text-twitch-muted text-xs">No custom rewards found — make sure the engine is connected and has channel:read:redemptions scope.</p>
+                )}
+              </div>
+            )}
+          </div>
+          <div className="flex items-center gap-3">
+            <label className="text-twitch-muted text-xs w-24 shrink-0">Window</label>
+            <input type="number" min={1} value={consideration.minutes ?? 5} onChange={e => p('minutes', Number(e.target.value))}
+              className="w-16 bg-twitch-surface border border-twitch-border rounded px-2 py-1.5 text-twitch-text text-xs focus:outline-none focus:border-teal-600" />
+            <span className="text-twitch-muted text-xs">minutes</span>
+          </div>
+          <div className="flex items-center gap-3">
+            <label className="text-twitch-muted text-xs w-24 shrink-0">Pass when</label>
+            <div className="flex gap-2 flex-1">
+              {[['was redeemed', false], ['was NOT redeemed', true]].map(([lbl, val]) => (
+                <button key={String(val)} onClick={() => p('invert', val)}
+                  className={`flex-1 text-xs px-2 py-1.5 rounded border transition-colors ${
+                    (consideration.invert ?? false) === val ? 'bg-teal-900/30 border-teal-600 text-teal-400' : 'border-twitch-border text-twitch-muted hover:border-twitch-muted'
+                  }`}>
+                  {lbl}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {consideration.type === 'map_variable' && (
+        <div className="space-y-2">
+          {paramNames.length > 0 ? (
+            <div className="flex items-center gap-2">
+              <label className="text-twitch-muted text-xs w-20 shrink-0">Variable</label>
+              <select value={consideration.source ?? ''} onChange={e => p('source', e.target.value)}
+                className="flex-1 text-xs bg-twitch-surface border border-twitch-border rounded px-2 py-1.5 text-twitch-text focus:outline-none focus:border-teal-600">
+                <option value="">— pick a variable —</option>
+                {paramNames.map(n => <option key={n} value={n}>{n}</option>)}
+              </select>
+            </div>
+          ) : (
+            <p className="text-twitch-muted text-xs">Add a parameter or pattern capture first to use this.</p>
+          )}
+          {(consideration.mappings ?? []).map((m, i) => (
+            <div key={m.id} className="flex items-center gap-1.5">
+              <span className="text-xs text-twitch-muted w-16 shrink-0 text-right">{i === 0 ? 'If equals' : 'or equals'}</span>
+              <input value={m.from} onChange={e => p('mappings', consideration.mappings.map(x => x.id === m.id ? { ...x, from: e.target.value } : x))}
+                placeholder="this value"
+                className="flex-1 min-w-0 text-xs bg-twitch-surface border border-twitch-border rounded px-2 py-1.5 text-twitch-text focus:outline-none focus:border-teal-600" />
+              <span className="text-xs text-twitch-muted shrink-0">→</span>
+              <input value={m.to} onChange={e => p('mappings', consideration.mappings.map(x => x.id === m.id ? { ...x, to: e.target.value } : x))}
+                placeholder="use this"
+                className="flex-1 min-w-0 text-xs bg-twitch-surface border border-twitch-border rounded px-2 py-1.5 text-twitch-text focus:outline-none focus:border-teal-600" />
+              <button onClick={() => p('mappings', consideration.mappings.filter(x => x.id !== m.id))}
+                className="text-twitch-muted hover:text-red-400 transition-colors shrink-0"><X size={11} /></button>
+            </div>
+          ))}
+          <button onClick={() => p('mappings', [...(consideration.mappings ?? []), emptyMapping()])}
+            className="text-teal-500 hover:text-teal-400 text-xs flex items-center gap-1">
+            <Plus size={11} /> Add mapping
+          </button>
+          <p className="text-twitch-muted text-xs italic">If nothing matches, the value stays as-is.</p>
+        </div>
+      )}
+
+      {consideration.type === 'transform_variable' && (() => {
+        const isNumber = paramTypes[consideration.source ?? ''] === 'number'
+        const opMeta = findTransformOp(consideration.op, isNumber ? 'number' : 'text') ?? (isNumber ? TRANSFORM_OPS.number[0] : TRANSFORM_OPS.text[0])
+        return (
+          <div className="space-y-2">
+            {paramNames.length > 0 ? (
+              <div className="flex items-center gap-2">
+                <label className="text-twitch-muted text-xs w-20 shrink-0">Variable</label>
+                <select value={consideration.source ?? ''}
+                  onChange={e => onChange({ ...consideration, source: e.target.value, op: paramTypes[e.target.value] === 'number' ? 'add' : 'uppercase', opArgs: {} })}
+                  className="flex-1 text-xs bg-twitch-surface border border-twitch-border rounded px-2 py-1.5 text-twitch-text focus:outline-none focus:border-teal-600">
+                  <option value="">— pick a variable —</option>
+                  {paramNames.map(n => <option key={n} value={n}>{n}</option>)}
+                </select>
+              </div>
+            ) : (
+              <p className="text-twitch-muted text-xs">Add a parameter or pattern capture first to use this.</p>
+            )}
+            <div className="flex items-center gap-2">
+              <label className="text-twitch-muted text-xs w-20 shrink-0">Operation</label>
+              <select value={opMeta.value}
+                onChange={e => p('op', e.target.value)}
+                className="flex-1 text-xs bg-twitch-surface border border-twitch-border rounded px-2 py-1.5 text-twitch-text focus:outline-none focus:border-teal-600">
+                {isNumber
+                  ? TRANSFORM_OPS.number.map(o => <option key={o.value} value={o.value}>{o.label}</option>)
+                  : TRANSFORM_OPS.text.map(o => <option key={o.value} value={o.value}>{o.label}</option>)
+                }
+              </select>
+            </div>
+            {(opMeta?.args ?? []).map(arg => (
+              <div key={arg.key} className="flex items-center gap-2">
+                <label className="text-twitch-muted text-xs w-20 shrink-0">{arg.label}</label>
+                <input type={arg.type === 'number' ? 'number' : 'text'}
+                  value={(consideration.opArgs ?? {})[arg.key] ?? arg.default}
+                  onChange={e => p('opArgs', { ...(consideration.opArgs ?? {}), [arg.key]: e.target.value })}
+                  placeholder={arg.optional ? 'blank = end' : ''}
+                  className="w-36 text-xs bg-twitch-surface border border-twitch-border rounded px-2 py-1.5 text-twitch-text focus:outline-none focus:border-teal-600" />
+              </div>
+            ))}
+          </div>
+        )
+      })()}
     </div>
   )
 }
@@ -1412,7 +1728,17 @@ function ActionRow({ action, onChange, onRemove, canRemove, hasBot, params, patt
     if (action.type === 'obs_set_source' && obsScenes.length === 0) {
       window.api.obs.getScenes().then(r => { if (r?.ok) setObsScenes(r.data?.scenes ?? []) }).catch(() => {})
     }
-  }, [action.type])
+    if (action.type === 'play_media' && (action.mediaType ?? 'audio') === 'audio') {
+      navigator.mediaDevices.enumerateDevices().then(devices =>
+        setAudioDevices(devices.filter(d => d.kind === 'audiooutput'))
+      ).catch(() => {})
+    }
+    if (action.type === 'play_media' && action.mediaType === 'video') {
+      window.api.shiny.getSourceList().then(r => {
+        if (r?.ok) setObsSources((r.data ?? []).filter(s => s.kind === 'ffmpeg_source' || s.kind === 'vlc_source'))
+      }).catch(() => {})
+    }
+  }, [action.type, action.mediaType])
 
   useEffect(() => {
     if (action.type === 'obs_set_source') {
@@ -1421,12 +1747,12 @@ function ActionRow({ action, onChange, onRemove, canRemove, hasBot, params, patt
   }, [action.type, action.scene])
 
   async function browsFile(filters) {
-    const path = await window.api.app.openFile(filters)
-    if (path) patch('filePath', path)
+    const res = await window.api.app.openFile(filters)
+    if (res?.ok && res.data) patch('filePath', res.data)
   }
 
   const ACTION_TYPES = [
-    { value: 'send_chat_response',label: 'Chat response' },
+    { value: 'send_chat_response',label: 'Text response' },
     { value: 'play_media',       label: 'Play audio/video' },
     { value: 'random_line',      label: 'Random line' },
     { value: 'obs_set_source',   label: 'OBS source' },
@@ -1460,7 +1786,7 @@ function ActionRow({ action, onChange, onRemove, canRemove, hasBot, params, patt
         <div className="flex items-center gap-2 px-3 py-2 border-b border-twitch-border bg-twitch-surface">
           <div className="flex items-center gap-1 bg-twitch-dark rounded-lg p-0.5">
             {[{ value: 'audio', label: 'Audio' }, { value: 'video', label: 'Video' }].map(m => (
-              <button key={m.value} onClick={() => patch('mediaType', m.value)}
+              <button key={m.value} onClick={() => onChange({ ...action, mediaType: m.value, filePath: '', obsSource: '' })}
                 className={`text-xs px-2 py-1 rounded transition-colors ${(action.mediaType ?? 'audio') === m.value ? 'bg-teal-700 text-white' : 'text-twitch-muted hover:text-twitch-text'}`}>
                 {m.label}
               </button>
@@ -1473,7 +1799,7 @@ function ActionRow({ action, onChange, onRemove, canRemove, hasBot, params, patt
       {isChat && (
         <div className={`flex items-center gap-2 px-3 py-2 border-b border-twitch-border ${isAnnouncement ? 'bg-teal-900/20' : 'bg-twitch-surface'}`}>
           <div className="flex items-center gap-1 bg-twitch-dark rounded-lg p-0.5">
-            {[{ value: 'message', label: 'Chat message' }, { value: 'announcement', label: 'Announcement' }].map(m => (
+            {[{ value: 'message', label: 'Chat message' }, { value: 'announcement', label: 'Announcement' }, ...(hasBot ? [{ value: 'whisper', label: 'Whisper' }] : [])].map(m => (
               <button key={m.value} onClick={() => patch('responseMode', m.value)}
                 className={`text-xs px-2 py-1 rounded transition-colors ${(action.responseMode ?? 'message') === m.value ? 'bg-teal-700 text-white' : 'text-twitch-muted hover:text-twitch-text'}`}>
                 {m.label}
@@ -1594,8 +1920,8 @@ function ActionRow({ action, onChange, onRemove, canRemove, hasBot, params, patt
                 <select value={action.obsSource ?? ''} onChange={e => patch('obsSource', e.target.value)}
                   className="w-full text-xs bg-twitch-surface border border-twitch-border rounded px-2 py-1.5 text-twitch-text focus:outline-none focus:border-teal-600">
                   <option value="">(select a media source)</option>
-                  {obsSources.filter(s => s?.sourceName).map(s => (
-                    <option key={s.sourceName} value={s.sourceName}>{s.sourceName}</option>
+                  {obsSources.filter(s => s?.name).map(s => (
+                    <option key={s.name} value={s.name}>{s.name}</option>
                   ))}
                 </select>
               </div>
@@ -1639,7 +1965,7 @@ function ActionRow({ action, onChange, onRemove, canRemove, hasBot, params, patt
             {!isLineFile && (
               <div className="space-y-1">
                 <label className="text-twitch-muted text-xs">Lines (one per line)</label>
-                <textarea value={(action.lines ?? []).join('\n')} onChange={e => patch('lines', e.target.value.split('\n').filter(l => l.trim()))}
+                <textarea value={(action.lines ?? []).join('\n')} onChange={e => patch('lines', e.target.value.split('\n'))}
                   placeholder="Enter each line on a new line..."
                   rows={6}
                   className="w-full text-xs bg-twitch-surface border border-twitch-border rounded px-2 py-1.5 text-twitch-text focus:outline-none focus:border-teal-600 resize-none" />
@@ -2066,6 +2392,7 @@ export default function ChatTriggerEditor() {
             found.responses ??= [{ id: uid(), actions: [emptyAction()] }]
             found.routing ??= []
             found.considerations ??= []
+            found.varModifiers ??= []
             found.activation ??= emptyActivation()
             found.activation.conditions ??= emptyActivation().conditions
             // migrate single-string fields to arrays
@@ -2085,7 +2412,7 @@ export default function ChatTriggerEditor() {
     }
   }, [id, isNew])
 
-  function patch(k, v) { setTrigger(t => ({ ...t, [k]: v })) }
+  function patch(k, v) { setTrigger(t => ({ ...t, [k]: v })); if (k === 'pattern' || k === 'command' || k === 'type') setTestResults(null) }
   function showToast(msg) { setToast(msg); setTimeout(() => setToast(null), 3000) }
 
   // template
@@ -2143,6 +2470,8 @@ export default function ChatTriggerEditor() {
       patch('considerations', next)
     }
   }
+
+
 
   // response groups
   // Conditions
@@ -2209,9 +2538,11 @@ export default function ChatTriggerEditor() {
       pattern: trigger.type === 'message' ? (trigger.pattern ?? '') : undefined,
       template: undefined,
       actions: undefined,
-      // Timer-specific defaults
+      // Timed event defaults
+      timerMode: trigger.type === 'timer' ? (trigger.timerMode ?? 'interval') : undefined,
       interval: trigger.type === 'timer' ? (trigger.interval ?? 15) : undefined,
       intervalUnit: trigger.type === 'timer' ? (trigger.intervalUnit ?? 'minutes') : undefined,
+      streamStartDelay: trigger.type === 'timer' ? (trigger.streamStartDelay ?? 15) : undefined,
       onlyWhenLive: trigger.type === 'timer' ? (trigger.onlyWhenLive ?? true) : undefined,
     }
     const res = isNew
@@ -2222,11 +2553,16 @@ export default function ChatTriggerEditor() {
   }
 
   async function runTest() {
-    const res = await window.api.chatTriggers.testMessage(testText, testUsername)
+    const res = await window.api.chatTriggers.testTrigger(trigger, testText, testUsername || 'testuser')
     if (res.ok) setTestResults(res.data)
   }
 
   const commandParamNames = (trigger.commandParams ?? []).map(p => p.name).filter(Boolean)
+  const allParamNames = [...new Set([...commandParamNames, ...getPatternParamNames(trigger.pattern ?? '')])]
+  const allParamTypes = {
+    ...Object.fromEntries((trigger.commandParams ?? []).filter(p => p.name).map(p => [p.name, p.paramType ?? 'text'])),
+    ...getPatternParamTypes(trigger.pattern ?? ''),
+  }
 
   if (loading) return (
     <div className="flex items-center justify-center h-full">
@@ -2266,10 +2602,11 @@ export default function ChatTriggerEditor() {
         {/* Type */}
         <div className="flex items-center gap-0.5 bg-twitch-dark rounded-xl p-1 w-fit flex-wrap">
           {[
-            { value: 'message',    label: '# Chat message' },
-            { value: 'command',    label: '! Command' },
-            { value: 'obs_source', label: '📡 OBS Source' },
-            { value: 'timer',      label: '⏱ Timer' },
+            { value: 'message',       label: '# Chat message' },
+            { value: 'command',       label: '! Command' },
+            { value: 'channel_point', label: '⭐ Twitch Redeem' },
+            { value: 'obs_source',    label: '📡 OBS Source' },
+            { value: 'timer',         label: '⏱ Timed Event' },
           ].map(opt => (
             <button key={opt.value} onClick={() => patch('type', opt.value)}
               className={`px-3 py-1.5 rounded-lg border text-sm transition-colors ${
@@ -2295,6 +2632,7 @@ export default function ChatTriggerEditor() {
 
             <div className="space-y-2">
               <div className="flex items-center justify-between">
+                <label className="text-twitch-muted text-xs">Parameters</label>
                 <label className="text-twitch-muted text-xs">Parameters</label>
                 <button onClick={addParam} className="text-teal-500 hover:text-teal-400 text-xs flex items-center gap-1">
                   <Plus size={11} /> Add parameter
@@ -2346,38 +2684,77 @@ export default function ChatTriggerEditor() {
           </section>
         )}
 
+        {/* Channel Point trigger config */}
+        {trigger.type === 'channel_point' && (
+          <ChannelPointTriggerConfig trigger={trigger} patch={patch} />
+        )}
+
         {/* OBS Source trigger config */}
         {trigger.type === 'obs_source' && (
           <ObsSourceTriggerConfig trigger={trigger} patch={patch} />
         )}
 
-        {/* Timer trigger config */}
+        {/* Timed Event trigger config */}
         {trigger.type === 'timer' && (
           <section className="space-y-3">
-            <h2 className="text-twitch-text text-sm font-medium">Timer settings</h2>
+            <h2 className="text-twitch-text text-sm font-medium">Timed Event settings</h2>
             <Card>
-              <div className="flex items-center gap-3">
-                <label className="text-twitch-muted text-xs w-24 shrink-0">Fire every</label>
-                <input type="number" min={1} value={trigger.interval ?? 15}
-                  onChange={e => patch('interval', Math.max(1, Number(e.target.value)))}
-                  className="w-20 bg-twitch-dark border border-twitch-border rounded px-2 py-1.5 text-twitch-text text-sm focus:outline-none focus:border-teal-600" />
-                <div className="flex gap-1">
-                  {['minutes','hours'].map(unit => (
-                    <button key={unit} onClick={() => patch('intervalUnit', unit)}
-                      className={`text-xs px-3 py-1.5 rounded border transition-colors capitalize ${
-                        (trigger.intervalUnit ?? 'minutes') === unit
-                          ? 'bg-teal-900/30 border-teal-600 text-teal-400'
-                          : 'border-twitch-border text-twitch-muted hover:border-twitch-muted'
-                      }`}>
-                      {unit}
-                    </button>
-                  ))}
-                </div>
+              {/* Mode selection */}
+              <div className="flex gap-1">
+                {[
+                  { value: 'interval',     label: 'Every X minutes' },
+                  { value: 'stream_start', label: 'X min after stream start' },
+                ].map(opt => (
+                  <button key={opt.value} onClick={() => patch('timerMode', opt.value)}
+                    className={`text-xs px-3 py-1.5 rounded border transition-colors ${
+                      (trigger.timerMode ?? 'interval') === opt.value
+                        ? 'bg-teal-900/30 border-teal-600 text-teal-400'
+                        : 'border-twitch-border text-twitch-muted hover:border-twitch-muted'
+                    }`}>
+                    {opt.label}
+                  </button>
+                ))}
               </div>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <Toggle on={trigger.onlyWhenLive ?? true} onChange={v => patch('onlyWhenLive', v)} size="md" />
-                <span className="text-twitch-muted text-xs">Only fire when stream is live</span>
-              </label>
+
+              {/* Interval mode */}
+              {(trigger.timerMode ?? 'interval') === 'interval' && (
+                <div className="flex items-center gap-3">
+                  <label className="text-twitch-muted text-xs w-24 shrink-0">Fire every</label>
+                  <input type="number" min={1} value={trigger.interval ?? 15}
+                    onChange={e => patch('interval', Math.max(1, Number(e.target.value)))}
+                    className="w-20 bg-twitch-dark border border-twitch-border rounded px-2 py-1.5 text-twitch-text text-sm focus:outline-none focus:border-teal-600" />
+                  <div className="flex gap-1">
+                    {['minutes','hours'].map(unit => (
+                      <button key={unit} onClick={() => patch('intervalUnit', unit)}
+                        className={`text-xs px-3 py-1.5 rounded border transition-colors capitalize ${
+                          (trigger.intervalUnit ?? 'minutes') === unit
+                            ? 'bg-teal-900/30 border-teal-600 text-teal-400'
+                            : 'border-twitch-border text-twitch-muted hover:border-twitch-muted'
+                        }`}>
+                        {unit}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Stream start mode */}
+              {(trigger.timerMode ?? 'interval') === 'stream_start' && (
+                <div className="flex items-center gap-3">
+                  <label className="text-twitch-muted text-xs shrink-0">Fire</label>
+                  <input type="number" min={0} value={trigger.streamStartDelay ?? 15}
+                    onChange={e => patch('streamStartDelay', Math.max(0, Number(e.target.value)))}
+                    className="w-20 bg-twitch-dark border border-twitch-border rounded px-2 py-1.5 text-twitch-text text-sm focus:outline-none focus:border-teal-600" />
+                  <span className="text-twitch-muted text-xs">minutes after stream goes live</span>
+                </div>
+              )}
+
+              {(trigger.timerMode ?? 'interval') === 'interval' && (
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <Toggle on={trigger.onlyWhenLive ?? true} onChange={v => patch('onlyWhenLive', v)} size="md" />
+                  <span className="text-twitch-muted text-xs">Only fire when stream is live</span>
+                </label>
+              )}
             </Card>
           </section>
         )}
@@ -2421,7 +2798,9 @@ export default function ChatTriggerEditor() {
                 onMoveUp={() => moveConsiderationUp(c.id)}
                 onMoveDown={() => moveConsiderationDown(c.id)}
                 canMoveUp={idx > 0}
-                canMoveDown={idx < (trigger.considerations ?? []).length - 1} />
+                canMoveDown={idx < (trigger.considerations ?? []).length - 1}
+                paramNames={allParamNames}
+                paramTypes={allParamTypes} />
             ))}
           </div>
         </section>
@@ -2674,7 +3053,9 @@ export default function ChatTriggerEditor() {
                 onChange={updated => updateResponse(response.id, { ...response, actions: updated.actions ?? updated })}
                 onRemove={() => removeResponse(response.id)}
                 canRemove={(trigger.responses ?? []).length > 1}
-                hasBot={hasBot} params={commandParamNames} pattern={trigger.pattern}
+                hasBot={hasBot}
+                params={trigger.type === 'channel_point' ? ['redeem_title', 'redeem_input', 'redeem_cost'] : commandParamNames}
+                pattern={trigger.type === 'channel_point' ? '' : trigger.pattern}
                 isMultiResponse={(trigger.responses ?? []).length > 1} />
             ))}
           </div>
@@ -2706,7 +3087,7 @@ export default function ChatTriggerEditor() {
         <ActivationCard activation={trigger.activation} onChange={v => patch('activation', v)} />
 
         {/* Test panel */}
-        {!isNew && (
+        {(trigger.type === 'message' || trigger.type === 'command') && (
           <Card title="Test">
             <div className="flex items-center gap-2">
               <input value={testText} onChange={e => setTestText(e.target.value)} placeholder="Test message..."
@@ -2715,14 +3096,30 @@ export default function ChatTriggerEditor() {
                 className="w-28 bg-twitch-dark border border-twitch-border rounded px-2 py-1.5 text-twitch-muted text-sm focus:outline-none focus:border-teal-600" />
               <button onClick={runTest} className="bg-teal-700 hover:bg-teal-600 text-white text-sm px-3 py-1.5 rounded transition-colors">Test</button>
             </div>
-            <p className="text-twitch-muted text-xs flex items-center gap-1">
-              <Info size={10} /> Test only checks message/command matching — not considerations or response group conditions.
-            </p>
-            {testResults && testResults.map(r => r.id === id && (
-              <div key={r.id} className={`flex items-center gap-2 text-xs px-2 py-1.5 rounded ${r.matches ? 'bg-teal-900/30 text-teal-400' : 'bg-red-900/20 text-red-400'}`}>
-                {r.matches ? '✓ Would fire' : '✕ Would not fire'}
+            {testResults && (
+              <div className="space-y-1 mt-1">
+                {!testResults.matches && (
+                  <div className="text-xs px-2 py-1.5 rounded bg-red-900/20 text-red-400">✕ Would not fire</div>
+                )}
+                {testResults.matches && testResults.cooldownBlocked && (
+                  <div className="text-xs px-2 py-1.5 rounded bg-amber-900/20 text-amber-400">
+                    ✓ Matches — cooldown active ({testResults.cooldownSecondsLeft}s remaining)
+                  </div>
+                )}
+                {testResults.matches && !testResults.cooldownBlocked && (testResults.actions ?? []).map((a, i) => (
+                  <div key={i} className="text-xs px-2 py-1.5 rounded bg-teal-900/30 text-teal-400">
+                    {a.type === 'send_chat_response' ? a.text || '(empty)' :
+                     a.type === 'play_media' ? `▶ ${a.filePath || '(no file)'}` :
+                     a.type === 'random_line' ? '(random line)' :
+                     a.type === 'obs_set_source' ? `OBS: ${a.source} → ${a.visible ? 'show' : 'hide'}` :
+                     a.type}
+                  </div>
+                ))}
+                {testResults.matches && !testResults.cooldownBlocked && (testResults.actions ?? []).length === 0 && (
+                  <div className="text-xs px-2 py-1.5 rounded bg-teal-900/30 text-teal-400">✓ Would fire (no actions)</div>
+                )}
               </div>
-            ))}
+            )}
           </Card>
         )}
 
