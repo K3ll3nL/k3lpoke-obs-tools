@@ -31,6 +31,11 @@ function groupSimilarScenes(scenes) {
   return groups
 }
 
+function findUnusedSources(allSourceNames, scenes) {
+  const used = new Set(scenes.flatMap(s => s.items.map(i => i.sourceName)))
+  return allSourceNames.filter(name => !used.has(name))
+}
+
 // ── Shared ────────────────────────────────────────────────────────────────────
 
 function TabButton({ label, icon: Icon, active, onClick }) {
@@ -178,8 +183,6 @@ function SimilarScenesTab({ scenes }) {
 
   return (
     <div className="space-y-4 max-w-2xl">
-      <p className="text-twitch-muted text-sm">Scenes sharing 80% or more of the same sources are grouped below.</p>
-
       {visibleGroups.length === 0 && (
         <div className="text-center py-12 text-twitch-muted">
           <GitMerge size={32} className="mx-auto mb-3 opacity-40" />
@@ -225,8 +228,8 @@ function SimilarScenesTab({ scenes }) {
 
 // ── Unused Sources Tab ────────────────────────────────────────────────────────
 
-function UnusedSourcesTab({ allSources, usedSources }) {
-  const initialUnused = allSources.filter(name => !usedSources.has(name))
+function UnusedSourcesTab({ scenes, allSources }) {
+  const initialUnused = findUnusedSources(allSources, scenes)
   const [deleted, setDeleted] = useState(new Set())
   const [deleting, setDeleting] = useState(null)
   const [errors, setErrors] = useState({}) // { name: errorMsg }
@@ -236,15 +239,11 @@ function UnusedSourcesTab({ allSources, usedSources }) {
   async function handleDelete(name) {
     setDeleting(name)
     setErrors(e => { const next = { ...e }; delete next[name]; return next })
-    try {
-      const res = await window.api.scenes.removeSource(name)
-      if (res.ok) {
-        setDeleted(d => new Set([...d, name]))
-      } else {
-        setErrors(e => ({ ...e, [name]: res.error || 'Delete failed' }))
-      }
-    } catch (err) {
-      setErrors(e => ({ ...e, [name]: err.message || 'Delete failed' }))
+    const res = await window.api.scenes.removeSource(name)
+    if (res.ok) {
+      setDeleted(d => new Set([...d, name]))
+    } else {
+      setErrors(e => ({ ...e, [name]: res.error }))
     }
     setDeleting(null)
   }
@@ -254,7 +253,6 @@ function UnusedSourcesTab({ allSources, usedSources }) {
       <p className="text-twitch-muted text-sm">
         These sources exist in OBS but are not referenced in any scene.
       </p>
-
 
       {unused.length === 0 && (
         <div className="text-center py-12 text-twitch-muted">
@@ -271,20 +269,18 @@ function UnusedSourcesTab({ allSources, usedSources }) {
           </div>
           <div className="divide-y divide-white/5 max-h-72 overflow-y-auto">
             {unused.map(name => (
-              <div key={name} className="px-4 py-3">
-                <div className="flex items-center gap-3">
-                  <span className="text-sm text-white flex-1 truncate">{name}</span>
-                  <button
-                    onClick={() => handleDelete(name)}
-                    disabled={deleting === name}
-                    className="px-3 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 text-xs font-medium transition-colors disabled:opacity-40 shrink-0"
-                  >
-                    {deleting === name ? <Loader2 size={12} className="animate-spin" /> : 'Delete'}
-                  </button>
-                </div>
+              <div key={name} className="flex items-center gap-3 px-4 py-3">
+                <span className="text-sm text-white flex-1 truncate">{name}</span>
                 {errors[name] && (
-                  <p className="text-xs text-red-400 mt-1">{errors[name]}</p>
+                  <span className="text-xs text-red-400 truncate max-w-32">{errors[name]}</span>
                 )}
+                <button
+                  onClick={() => handleDelete(name)}
+                  disabled={deleting === name}
+                  className="px-3 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 text-xs font-medium transition-colors disabled:opacity-40 shrink-0"
+                >
+                  {deleting === name ? <Loader2 size={12} className="animate-spin" /> : 'Delete'}
+                </button>
               </div>
             ))}
           </div>
@@ -304,21 +300,18 @@ export default function SceneCleanup({ obsConnected }) {
   const [tab, setTab] = useState('replace')
   const [scenes, setScenes] = useState([])
   const [allSources, setAllSources] = useState([])
-  const [usedSources, setUsedSources] = useState(new Set())
   const [loading, setLoading] = useState(false)
 
   const load = useCallback(async () => {
     if (!obsConnected) return
     setLoading(true)
     try {
-      const [scenesRes, sourcesRes, usedRes] = await Promise.all([
+      const [scenesRes, sourcesRes] = await Promise.all([
         window.api.scenes.getAll(),
         window.api.scenes.getSources(),
-        window.api.scenes.getUsedSources(),
       ])
       if (scenesRes.ok) setScenes(scenesRes.data)
       if (sourcesRes.ok) setAllSources(sourcesRes.data.map(s => s.name))
-      if (usedRes.ok) setUsedSources(new Set(usedRes.data))
     } finally {
       setLoading(false)
     }
@@ -370,7 +363,7 @@ export default function SceneCleanup({ obsConnected }) {
           <>
             {tab === 'replace' && <BulkReplaceTab scenes={scenes} allSources={allSources} />}
             {tab === 'similar' && <SimilarScenesTab scenes={scenes} />}
-            {tab === 'unused'  && <UnusedSourcesTab allSources={allSources} usedSources={usedSources} />}
+            {tab === 'unused'  && <UnusedSourcesTab scenes={scenes} allSources={allSources} />}
           </>
         )}
       </div>

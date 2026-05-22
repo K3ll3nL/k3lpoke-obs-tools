@@ -9,6 +9,7 @@ export default function Settings({ twitchUser, obsConnected }) {
   const [obsError, setObsError] = useState(null)
   const [updateState, setUpdateState] = useState(null)
   const [installing, setInstalling] = useState(false)
+  const [version, setVersion] = useState(null)
 
   useEffect(() => {
     window.api.settings.getAll().then(r => {
@@ -18,6 +19,8 @@ export default function Settings({ twitchUser, obsConnected }) {
       if (s.obsPort)            setObsPort(String(s.obsPort))
       if (s.obsPassword != null) setObsPass(s.obsPassword)
     })
+
+    window.api.app.getVersion().then(v => setVersion(v))
 
     window.api.app.getUpdateState().then(r => {
       if (r.ok) setUpdateState(r.data)
@@ -136,6 +139,11 @@ export default function Settings({ twitchUser, obsConnected }) {
           <button className="btn-purple" onClick={reconnectOBS} disabled={obsLoading}>
             {obsLoading ? 'Connecting...' : obsConnected ? 'Reconnect' : 'Connect'}
           </button>
+        </section>
+
+        {/* App Version */}
+        <section className="card p-3 bg-black/40 border border-twitch-border/30">
+          <p className="text-xs text-twitch-muted">Version {version || 'loading...'}</p>
         </section>
 
       </div>

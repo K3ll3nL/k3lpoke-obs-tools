@@ -81,9 +81,18 @@ app.whenReady().then(async () => {
       autoUpdater.on('update-available', (info) => {
         console.log('[UPDATER] Update available:', info.version)
         win.webContents.send('app:update-available')
+        console.log('[UPDATER] Starting download...')
+        try {
+          autoUpdater.downloadUpdate()
+        } catch (err) {
+          console.error('[UPDATER] Download failed:', err.message)
+        }
       })
       autoUpdater.on('update-not-available', (info) => {
         console.log('[UPDATER] No update available. Current:', info.version)
+      })
+      autoUpdater.on('download-progress', (progress) => {
+        console.log(`[UPDATER] Download progress: ${progress.percent}%`)
       })
       autoUpdater.on('update-downloaded', (info) => {
         console.log('[UPDATER] Update downloaded:', info.version)
@@ -91,6 +100,7 @@ app.whenReady().then(async () => {
       })
       autoUpdater.on('error', (err) => {
         console.error('[UPDATER] Error:', err.message, err.stack)
+        win.webContents.send('app:update-error', { message: err.message })
       })
       autoUpdater.checkForUpdatesAndNotify().catch((err) => {
         console.error('[UPDATER] Check failed:', err.message, err.stack)
