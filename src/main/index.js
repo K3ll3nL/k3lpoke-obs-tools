@@ -78,12 +78,12 @@ app.whenReady().then(async () => {
       autoUpdater.on('checking-for-update', () => {
         console.log('[UPDATER] Checking for updates...')
       })
-      autoUpdater.on('update-available', (info) => {
+      autoUpdater.on('update-available', async (info) => {
         console.log('[UPDATER] Update available:', info.version)
         win.webContents.send('app:update-available')
         console.log('[UPDATER] Starting download...')
         try {
-          autoUpdater.downloadUpdate()
+          await autoUpdater.downloadUpdate()
         } catch (err) {
           console.error('[UPDATER] Download failed:', err.message)
         }
