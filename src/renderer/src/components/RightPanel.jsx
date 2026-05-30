@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef, useMemo } from 'react'
-import { Copy, Monitor, Check, Volume2, Lock, X, Scissors, Activity, Layers, Shuffle, SkipForward, Tag, ChevronDown, AlertTriangle } from 'lucide-react'
+import { Copy, Monitor, Check, Volume2, Lock, X, Scissors, Activity, Layers, Shuffle, SkipForward, Tag, ChevronDown, AlertTriangle, Plus, Pencil, Trash2, Zap } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import TrimBar from './TrimBar'
 import WaveformEditor from './WaveformEditor'
@@ -44,6 +44,10 @@ export default function RightPanel() {
   const [weightedSets, setWeightedSets] = useState([])
   const [configSaved, setConfigSaved] = useState(false)
   const [nextClipMsg, setNextClipMsg] = useState(false)
+  const [autoRules, setAutoRules] = useState([])
+  const [autoFallback, setAutoFallback] = useState({ targetType: 'single', targetCollectionId: 'main', targetWeightedSets: [] })
+  const [editingRuleId, setEditingRuleId] = useState(null)
+  const [editForm, setEditForm] = useState(null)
 
   const allCollections = useMemo(() => [
     { id: 'main', name: 'Main Queue', color: '#9146ff' },
@@ -85,6 +89,8 @@ export default function RightPanel() {
       setPlayMode(r.data.mode)
       setActiveSingleId(r.data.activeCollectionId || 'main')
       setWeightedSets(r.data.weightedSets || [])
+      setAutoRules(r.data.autoRules || [])
+      setAutoFallback(r.data.autoFallback || { targetType: 'single', targetCollectionId: 'main', targetWeightedSets: [] })
     })
     function onCollectionsChanged() {
       window.api.collections.list().then(r => { if (r.ok) setCollections(r.data) })
@@ -146,7 +152,6 @@ export default function RightPanel() {
   async function handleRemoveNowPlaying() {
     if (!nowPlaying) return
     await window.api.clips.remove(nowPlaying.id)
-    setNowPlaying(null)
     pendingClip.current = null
     setLocked(false)
     lockedRef.current = false
@@ -254,6 +259,139 @@ export default function RightPanel() {
     await window.api.playback.setConfig({ mode: 'single', activeCollectionId: id, weightedSets: [] })
     setPlayMode('single')
     showNextClipMsg()
+  }
+
+  // Auto mode helpers
+  function startEditRule(rule) { setEditingRuleId(rule.id); setEditForm({ ...rule }) }
+  function startNewRule() { setEditingRuleId('new'); setEditForm({ conditionType: 'game', game: '', titleKeywords: '', targetType: 'single', targetCollectionId: 'main', targetWeightedSets: [] }) }
+  function startEditFallback() { setEditingRuleId('fallback'); setEditForm({ ...autoFallback }) }
+  function cancelEditRule() { setEditingRuleId(null); setEditForm(null) }
+  function updateEditForm(key, val) { setEditForm(prev => ({ ...prev, [key]: val })) }
+
+  function toggleEditWeightedSet(colId) {
+    setEditForm(prev => {
+      const inSet = prev.targetWeightedSets.some(s => s.collectionId === colId)
+      return { ...prev, targetWeightedSets: inSet ? prev.targetWeightedSets.filter(s => s.collectionId !== colId) : [...prev.targetWeightedSets, { collectionId: colId, weight: 50 }] }
+    })
+  }
+
+  function setEditWeight(colId, weight) {
+    setEditForm(prev => ({ ...prev, targetWeightedSets: prev.targetWeightedSets.map(s => s.collectionId === colId ? { ...s, weight: Math.max(1, Math.min(100, Number(weight) || 1)) } : s) }))
+  }
+
+  function saveEditRule() {
+    if (!editForm) return
+    if (editingRuleId === 'fallback') {
+      setAutoFallback(editForm)
+    } else if (editingRuleId === 'new') {
+      setAutoRules(prev => [...prev, { ...editForm, id: crypto.randomUUID() }])
+    } else {
+      setAutoRules(prev => prev.map(r => r.id === editingRuleId ? { ...editForm, id: editingRuleId } : r))
+    }
+    setEditingRuleId(null)
+    setEditForm(null)
+  }
+
+  function deleteRule(id) { setAutoRules(prev => prev.filter(r => r.id !== id)) }
+
+  async function saveAutoConfig() {
+    await window.api.playback.setConfig({ mode: 'auto', autoRules, autoFallback })
+    setConfigSaved(true)
+    setTimeout(() => setConfigSaved(false), 2000)
+    showNextClipMsg()
+  }
+
+  function targetLabel(target) {
+    if (!target) return 'Main Queue'
+    if (target.targetType === 'weighted') {
+      const names = (target.targetWeightedSets || []).map(s => allCollections.find(c => c.id === s.collectionId)?.name).filter(Boolean)
+      return names.length ? `Mix: ${names.join(', ')}` : 'No mix set'
+    }
+    return allCollections.find(c => c.id === target.targetCollectionId)?.name || 'Main Queue'
+  }
+
+  function ruleConditionLabel(rule) {
+    if (rule.conditionType === 'title') return `Title has "${rule.titleKeywords || '?'}"`
+    if (rule.conditionType === 'both') return `${rule.game || '?'} + "${rule.titleKeywords || '?'}"`
+    return `Game: ${rule.game || '?'}`
+  }
+
+  function renderEditForm(isFallback) {
+    if (!editForm) return null
+    return (
+      <div className="bg-twitch-surface border border-twitch-border rounded p-2.5 space-y-2">
+        {!isFallback && (
+          <>
+            <p className="text-[10px] text-twitch-muted font-medium uppercase tracking-wide">When…</p>
+            <div className="flex rounded overflow-hidden border border-twitch-border">
+              {['game', 'title', 'both'].map(type => (
+                <button key={type} onClick={() => updateEditForm('conditionType', type)}
+                  className={`flex-1 py-1 text-[11px] font-medium transition-colors ${editForm.conditionType === type ? 'bg-twitch-purple text-white' : 'text-twitch-muted hover:text-twitch-text'}`}>
+                  {type === 'game' ? 'Game' : type === 'title' ? 'Title' : 'Both'}
+                </button>
+              ))}
+            </div>
+            {(editForm.conditionType === 'game' || editForm.conditionType === 'both') && (
+              <input className="input text-xs w-full" placeholder="Game name (e.g. Minecraft)" value={editForm.game} onChange={e => updateEditForm('game', e.target.value)} />
+            )}
+            {(editForm.conditionType === 'title' || editForm.conditionType === 'both') && (
+              <input className="input text-xs w-full" placeholder="Keywords, comma-separated" value={editForm.titleKeywords} onChange={e => updateEditForm('titleKeywords', e.target.value)} />
+            )}
+          </>
+        )}
+        <p className="text-[10px] text-twitch-muted font-medium uppercase tracking-wide">Play from…</p>
+        <div className="flex rounded overflow-hidden border border-twitch-border">
+          <button onClick={() => updateEditForm('targetType', 'single')}
+            className={`flex-1 py-1 text-[11px] font-medium transition-colors ${editForm.targetType === 'single' ? 'bg-twitch-purple text-white' : 'text-twitch-muted hover:text-twitch-text'}`}>
+            Single
+          </button>
+          <button onClick={() => updateEditForm('targetType', 'weighted')}
+            className={`flex-1 py-1 text-[11px] flex items-center justify-center gap-1 font-medium transition-colors ${editForm.targetType === 'weighted' ? 'bg-twitch-purple text-white' : 'text-twitch-muted hover:text-twitch-text'}`}>
+            <Shuffle size={9} /> Mix
+          </button>
+        </div>
+        {editForm.targetType === 'single' && (
+          <div className="space-y-0.5 max-h-28 overflow-y-auto">
+            {allCollections.map(col => (
+              <button key={col.id} onClick={() => updateEditForm('targetCollectionId', col.id)}
+                className={`w-full text-left px-2 py-1 rounded text-[11px] flex items-center gap-1.5 transition-colors ${editForm.targetCollectionId === col.id ? 'bg-twitch-surface border border-twitch-purple/40 text-twitch-text' : 'text-twitch-muted hover:bg-twitch-surface/60 hover:text-twitch-text border border-transparent'}`}>
+                <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: col.color }} />
+                <span className="flex-1 truncate">{col.name}</span>
+                {editForm.targetCollectionId === col.id && <Check size={9} className="text-twitch-purple shrink-0" />}
+              </button>
+            ))}
+          </div>
+        )}
+        {editForm.targetType === 'weighted' && (
+          <div className="space-y-1.5 max-h-36 overflow-y-auto">
+            {allCollections.map(col => {
+              const inSet = editForm.targetWeightedSets.some(s => s.collectionId === col.id)
+              const set = editForm.targetWeightedSets.find(s => s.collectionId === col.id)
+              const totalW = editForm.targetWeightedSets.reduce((s, w) => s + w.weight, 0)
+              const pct = totalW > 0 && inSet ? Math.round((set.weight / totalW) * 100) : 0
+              return (
+                <div key={col.id}>
+                  <div className="flex items-center gap-1.5 mb-0.5">
+                    <button onClick={() => toggleEditWeightedSet(col.id)}
+                      className={`w-3 h-3 rounded border flex items-center justify-center shrink-0 transition-colors ${inSet ? 'bg-twitch-purple border-twitch-purple' : 'border-twitch-border hover:border-twitch-purple/50'}`}>
+                      {inSet && <Check size={7} className="text-white" />}
+                    </button>
+                    <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: col.color }} />
+                    <span className="flex-1 text-[11px] text-twitch-text truncate">{col.name}</span>
+                    {inSet && <span className="text-[10px] text-twitch-purple font-medium shrink-0">{pct}%</span>}
+                  </div>
+                  {inSet && <input type="range" min="1" max="100" value={set.weight} onChange={e => setEditWeight(col.id, e.target.value)} className="w-full accent-twitch-purple" />}
+                </div>
+              )
+            })}
+          </div>
+        )}
+        <div className="flex gap-1.5 pt-0.5">
+          <button onClick={cancelEditRule} className="flex-1 py-1 text-[11px] text-twitch-muted hover:text-twitch-text border border-twitch-border rounded transition-colors">Cancel</button>
+          <button onClick={saveEditRule} className="flex-1 py-1 text-[11px] btn-purple rounded">Save</button>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -439,7 +577,13 @@ export default function RightPanel() {
             onClick={() => setPlayMode('weighted')}
             className={`flex-1 py-1.5 text-xs font-medium transition-colors flex items-center justify-center gap-1 ${playMode === 'weighted' ? 'bg-twitch-purple text-white' : 'text-twitch-muted hover:text-twitch-text'}`}
           >
-            <Shuffle size={11} /> Weighted
+            <Shuffle size={11} /> Mix
+          </button>
+          <button
+            onClick={() => setPlayMode('auto')}
+            className={`flex-1 py-1.5 text-xs font-medium transition-colors flex items-center justify-center gap-1 ${playMode === 'auto' ? 'bg-twitch-purple text-white' : 'text-twitch-muted hover:text-twitch-text'}`}
+          >
+            <Zap size={11} /> Auto
           </button>
         </div>
 
@@ -522,6 +666,59 @@ export default function RightPanel() {
             </div>
           </div>
         )}
+        {/* Auto mode: stream-context rules */}
+        {playMode === 'auto' && (
+          <div className="space-y-2">
+            <p className="text-[10px] text-twitch-muted">Rules are checked in order — first match wins. Evaluated each time a clip is picked.</p>
+            {autoRules.map(rule => (
+              <div key={rule.id}>
+                {editingRuleId === rule.id
+                  ? renderEditForm(false)
+                  : (
+                    <div className="flex items-center gap-1 px-2 py-1.5 rounded border border-twitch-border bg-twitch-surface/40 text-[11px]">
+                      <span className="flex-1 min-w-0 truncate">
+                        <span className="text-twitch-muted">{ruleConditionLabel(rule)}</span>
+                        <span className="text-twitch-border mx-1">→</span>
+                        <span className="text-twitch-text">{targetLabel(rule)}</span>
+                      </span>
+                      <button onClick={() => startEditRule(rule)} title="Edit" className="shrink-0 w-5 h-5 flex items-center justify-center text-twitch-muted hover:text-twitch-text rounded transition-colors"><Pencil size={10} /></button>
+                      <button onClick={() => deleteRule(rule.id)} title="Delete" className="shrink-0 w-5 h-5 flex items-center justify-center text-twitch-muted hover:text-red-400 rounded transition-colors"><Trash2 size={10} /></button>
+                    </div>
+                  )
+                }
+              </div>
+            ))}
+
+            {editingRuleId === 'new' && renderEditForm(false)}
+
+            {editingRuleId === null && (
+              <button onClick={startNewRule} className="w-full text-[11px] py-1.5 border border-dashed border-twitch-border rounded text-twitch-muted hover:text-twitch-text hover:border-twitch-purple/50 flex items-center justify-center gap-1 transition-colors">
+                <Plus size={10} /> Add Rule
+              </button>
+            )}
+
+            <div className="border-t border-twitch-border/50 pt-2">
+              <p className="text-[10px] text-twitch-muted mb-1.5">Otherwise, play:</p>
+              {editingRuleId === 'fallback'
+                ? renderEditForm(true)
+                : (
+                  <div className="flex items-center gap-1 px-2 py-1.5 rounded border border-twitch-border bg-twitch-surface/40 text-[11px]">
+                    <span className="flex-1 text-twitch-text truncate">{targetLabel(autoFallback)}</span>
+                    <button onClick={startEditFallback} title="Edit fallback" className="shrink-0 w-5 h-5 flex items-center justify-center text-twitch-muted hover:text-twitch-text rounded transition-colors"><Pencil size={10} /></button>
+                  </div>
+                )
+              }
+            </div>
+
+            <button
+              onClick={saveAutoConfig}
+              className="btn-purple w-full text-xs py-1.5 flex items-center justify-center gap-1 mt-1"
+            >
+              {configSaved ? <><Check size={11} /> Saved</> : 'Save Rules'}
+            </button>
+          </div>
+        )}
+
         {nextClipMsg && (
           <p className="text-[11px] text-twitch-muted mt-2">Changes will apply on the next clip.</p>
         )}

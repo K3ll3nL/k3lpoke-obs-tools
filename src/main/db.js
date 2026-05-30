@@ -35,6 +35,8 @@ export function initDb() {
   data.settings      ??= {}
   data.collections   ??= []
   data.playbackConfig      ??= { mode: 'single', activeCollectionId: 'main', weightedSets: [] }
+  data.playbackConfig.autoRules    ??= []
+  data.playbackConfig.autoFallback ??= { targetType: 'single', targetCollectionId: 'main', targetWeightedSets: [] }
   data.shinyDevices        ??= []
   data.shinyLayouts        ??= []
   data.shinyActiveLayoutId ??= null

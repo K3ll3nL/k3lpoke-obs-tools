@@ -1,5 +1,30 @@
 import React, { useEffect, useState } from 'react'
-import { Plus, Trash2 } from 'lucide-react'
+import { GripVertical, Plus, Trash2 } from 'lucide-react'
+
+const FACTORS = [
+  { key: 'avoidReplays',          label: 'Avoid replaying clips',         desc: 'Recently played clips are less likely to come up again soon.' },
+  { key: 'respectDistribution',   label: 'Respect streamer distribution', desc: "Keeps your mix matching the channel percentages you've set above" },
+  { key: 'gameMatch',             label: 'Match your current game',       desc: "Prefers clips from whatever game you're live with right now." },
+  { key: 'popularity',            label: 'Prefer popular clips',          desc: 'Clips with more views on Twitch are more likely to come up.' },
+  { key: 'clipFreshness',         label: 'Prefer newer clips',            desc: 'Clips that were created more recently on Twitch come up more often.' },
+]
+const STRENGTHS = [10, 7, 4, 2, 1]
+
+function weightsToFactorState(sw) {
+  const sorted = [...FACTORS].sort((a, b) => {
+    // avoidReplays stored as strength; legacy recentlyPlayedCooldownMins migrated
+    const wa = sw?.[a.key] ?? (a.key === 'avoidReplays' ? Math.min(10, Math.round((sw?.recentlyPlayedCooldownMins ?? 30) / 12)) : 0)
+    const wb = sw?.[b.key] ?? (b.key === 'avoidReplays' ? Math.min(10, Math.round((sw?.recentlyPlayedCooldownMins ?? 30) / 12)) : 0)
+    return wb - wa
+  })
+  return sorted.map(f => f.key)
+}
+
+function applyFactorState(order, existingSw) {
+  const next = { ...(existingSw ?? {}) }
+  order.forEach((key, i) => { next[key] = STRENGTHS[i] })
+  return next
+}
 
 const CHANNEL_COLORS = [
   '#9146FF','#FF6B6B','#4ECDC4','#FFD93D',
@@ -86,9 +111,17 @@ export default function ClipSettings() {
     biasPopular: false,
     biasRecent: false,
     channelWeights: {},
-    minCollectionDuration: 300, // 5 minutes in seconds
+    selectionWeights: {
+      avoidReplays: 10,
+      respectDistribution: 7,
+      gameMatch: 4,
+      popularity: 2,
+      clipFreshness: 1,
+    },
   })
   const [configReady, setConfigReady] = useState(false)
+  const [factorOrder, setFactorOrder] = useState(FACTORS.map(f => f.key))
+  const [dragIdx, setDragIdx] = useState(null)
 
   useEffect(() => {
     loadChannels()
@@ -102,12 +135,31 @@ export default function ClipSettings() {
             merged.biasPopular = merged.biasPopular || s.overlayConfig.shuffleBias === 'popular'
             merged.biasRecent  = merged.biasRecent  || s.overlayConfig.shuffleBias === 'recent'
           }
+          if (!merged.selectionWeights) {
+            merged.selectionWeights = {
+              avoidReplays: 10,
+              respectDistribution: merged.biasPopular || merged.biasRecent ? 7 : 7,
+              gameMatch: 4,
+              popularity: merged.biasPopular ? 7 : 2,
+              clipFreshness: merged.biasRecent ? 7 : 1,
+            }
+          }
           return merged
         })
+        const sw = s.overlayConfig.selectionWeights
+        if (sw) setFactorOrder(weightsToFactorState(sw))
       }
       setConfigReady(true)
     })
   }, [])
+
+  useEffect(() => {
+    if (!configReady) return
+    setOverlayConfig(p => ({
+      ...p,
+      selectionWeights: applyFactorState(factorOrder, p.selectionWeights),
+    }))
+  }, [factorOrder, configReady])
 
   useEffect(() => {
     if (!configReady) return
@@ -297,43 +349,53 @@ export default function ClipSettings() {
 
             <div className="border-t border-twitch-border pt-5 space-y-3">
               <div>
-                <label className="label mb-1 block">Shuffle Bias</label>
-                <p className="text-xs text-twitch-muted">Within each channel, boost clips that are more popular or more recent. Both can be active at once.</p>
+                <label className="label mb-1 block">What matters most?</label>
+                <p className="text-xs text-twitch-muted">Drag to set priority — the top item has the most influence on what plays next.</p>
               </div>
-              <Toggle
-                label="Favor Popular"
-                description="Within a channel, boost clips with higher view counts"
-                checked={overlayConfig.biasPopular}
-                onChange={v => setOverlayConfig(p => ({ ...p, biasPopular: v }))}
-              />
-              <Toggle
-                label="Favor Recent"
-                description="Within a channel, boost clips that were clipped more recently"
-                checked={overlayConfig.biasRecent}
-                onChange={v => setOverlayConfig(p => ({ ...p, biasRecent: v }))}
-              />
-              <Toggle
-                label="Play All Before Looping"
-                description="Cycle through every clip once before any clip repeats; when off, each pick is fully random"
-                checked={overlayConfig.playAllBeforeLoop ?? true}
-                onChange={v => setOverlayConfig(p => ({ ...p, playAllBeforeLoop: v }))}
-              />
-              <div className="pt-3 border-t border-twitch-border">
-                <label className="label mb-2 block">Minimum Collection Duration</label>
-                <p className="text-xs text-twitch-muted mb-3">
-                  When a custom collection clip plays, block main queue clips until the collection clip finishes. Warn if a collection has less than this duration.
-                </p>
-                <div className="flex items-center gap-3">
-                  <input
-                    type="range" min="60" max="900" step="30"
-                    value={overlayConfig.minCollectionDuration ?? 300}
-                    onChange={e => setOverlayConfig(p => ({ ...p, minCollectionDuration: Number(e.target.value) }))}
-                    className="flex-1 accent-twitch-purple"
-                  />
-                  <span className="text-xs text-twitch-text font-mono w-16 text-right">
-                    {Math.floor((overlayConfig.minCollectionDuration ?? 300) / 60)}m {((overlayConfig.minCollectionDuration ?? 300) % 60)}s
-                  </span>
-                </div>
+
+              <div className="space-y-2">
+                {factorOrder.map((key, i) => {
+                  const factor = FACTORS.find(f => f.key === key)
+                  const isFirst = i === 0
+                  return (
+                    <div
+                      key={key}
+                      draggable
+                      onDragStart={() => setDragIdx(i)}
+                      onDragOver={e => e.preventDefault()}
+                      onDrop={e => {
+                        e.preventDefault()
+                        if (dragIdx === null || dragIdx === i) { setDragIdx(null); return }
+                        const next = [...factorOrder]
+                        const [moved] = next.splice(dragIdx, 1)
+                        next.splice(i, 0, moved)
+                        setFactorOrder(next)
+                        setDragIdx(null)
+                      }}
+                      onDragEnd={() => setDragIdx(null)}
+                      className={`rounded-lg border border-twitch-border bg-twitch-dark transition-opacity select-none ${dragIdx === i ? 'opacity-40' : ''}`}
+                    >
+                      <div className="flex items-center gap-3 p-3 cursor-grab active:cursor-grabbing">
+                        <GripVertical size={15} className="text-twitch-muted shrink-0" />
+                        <span className="text-[10px] font-bold text-twitch-purple w-4 shrink-0 tabular-nums">{i + 1}</span>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium leading-tight text-twitch-text">{factor.label}</p>
+                          <p className="text-xs text-twitch-muted mt-0.5 leading-snug">{factor.desc}</p>
+                        </div>
+                      </div>
+                      {key === 'avoidReplays' && isFirst && (
+                        <div className="px-3 pb-3 pt-1.5 border-t border-twitch-border/50 mt-0">
+                          <Toggle
+                            label="Show every clip before repeating"
+                            description="Play through your whole queue once before any clip comes up again."
+                            checked={overlayConfig.playAllBeforeLoop ?? true}
+                            onChange={v => setOverlayConfig(p => ({ ...p, playAllBeforeLoop: v }))}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
               </div>
             </div>
           </div>

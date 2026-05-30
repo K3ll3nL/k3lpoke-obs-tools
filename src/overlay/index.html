@@ -96,7 +96,9 @@
     let colQueues    = {}
     let colIndices   = {}
     let recentlyPlayed = new Map() // clipId -> timestamp
-    const RECENTLY_PLAYED_MS = 5 * 60 * 1000
+    let recentChannelHistory = []  // [{ch, time}] for distribution balance
+    let currentGame = null         // game the streamer is currently live with
+    let currentStreamTitle = null  // stream title for Auto mode rule matching
     let playCfg      = { mode: 'single', activeCollectionId: 'main', weightedSets: [], collections: [] }
     let activeSlot   = 0
     let activeClipId = null
@@ -134,10 +136,47 @@
       biasRecent: false,
       channelWeights: {},
       playAllBeforeLoop: true,
+      selectionWeights: null,
+    }
+
+    function getSelWeights() {
+      const sw = config.selectionWeights
+      if (!sw) {
+        // Full legacy fallback
+        return {
+          avoidReplays: 6,
+          respectDistribution: 5,
+          gameMatch: 0,
+          popularity: config.biasPopular ? 7 : 0,
+          clipFreshness: config.biasRecent ? 7 : 0,
+        }
+      }
+      return {
+        // New keys (with migration from old key names)
+        avoidReplays: sw.avoidReplays ?? Math.min(10, Math.max(1, Math.round((sw.recentlyPlayedCooldownMins ?? 30) / 12))),
+        respectDistribution: sw.respectDistribution ?? sw.followingBalance ?? 5,
+        gameMatch: sw.gameMatch ?? 0,
+        popularity: sw.popularity ?? 0,
+        clipFreshness: sw.clipFreshness ?? 0,
+      }
+    }
+
+    async function fetchCurrentGame() {
+      try {
+        const res = await fetch(`${API}/api/current-stream`)
+        const { game, title } = await res.json()
+        currentGame = game ?? null
+        currentStreamTitle = title ?? null
+      } catch { currentGame = null; currentStreamTitle = null }
     }
 
     function applyConfig(cfg) {
-      const prev = { biasPopular: config.biasPopular, biasRecent: config.biasRecent, channelWeights: config.channelWeights }
+      const prev = {
+        biasPopular: config.biasPopular,
+        biasRecent: config.biasRecent,
+        channelWeights: config.channelWeights,
+        selectionWeights: JSON.stringify(config.selectionWeights),
+      }
       const wasVisible = info.classList.contains('visible')
       config = { ...config, ...cfg }
       // Migrate legacy shuffleBias string
@@ -151,6 +190,7 @@
       metaEl.style.fontSize  = (Math.max(8, config.fontSize - 4) * 0.1).toFixed(1) + 'vw'
       info.style.display = config.showOverlay ? '' : 'none'
       const biasChanged = prev.biasPopular !== config.biasPopular || prev.biasRecent !== config.biasRecent
+        || prev.selectionWeights !== JSON.stringify(config.selectionWeights)
       const weightsChanged = JSON.stringify(prev.channelWeights) !== JSON.stringify(config.channelWeights)
       if (biasChanged || weightsChanged) loadPlaybackConfig()
       if (activeClip && config.showOverlay) updateClipInfoText(activeClip)
@@ -166,12 +206,16 @@
     }
 
     // Weighted shuffle using exponential-distribution trick.
-    // Channel weights control proportion across channels; bias modifiers boost
+    // Channel weights control proportion across channels; selection weight factors boost
     // popular/recent clips within each channel. Every clip appears exactly once per cycle.
     function biasedShuffle(clips) {
-      const { biasPopular, biasRecent, channelWeights = {} } = config
+      const { channelWeights = {} } = config
+      const sw = getSelWeights()
+      const popW       = (sw.popularity ?? 0) / 10
+      const freshW     = (sw.clipFreshness ?? 0) / 10
+      const gameMatchW = (sw.gameMatch ?? 0) / 10
       const hasWeights = Object.keys(channelWeights).length > 0
-      if (!biasPopular && !biasRecent && !hasWeights || clips.length <= 1) return shuffle(clips)
+      if (!popW && !freshW && !gameMatchW && !hasWeights || clips.length <= 1) return shuffle(clips)
 
       const byChannel = {}
       for (const c of clips) {
@@ -179,40 +223,38 @@
         ;(byChannel[ch] = byChannel[ch] || []).push(c)
       }
 
-      // Filter out clips from channels with 0 weight
       const activeChannels = Object.keys(byChannel).filter(ch => (channelWeights[ch] ?? 1) > 0)
       const filtered = clips.filter(c => activeChannels.includes(c.broadcaster_name || ''))
-      if (filtered.length === 0) return shuffle(clips) // Fallback if all channels are 0-weight
+      if (filtered.length === 0) return shuffle(clips)
       if (filtered.length <= 1) return filtered
 
-      const channels = activeChannels
-      const totalChW = channels.reduce((s, ch) => s + (channelWeights[ch] ?? 1), 0)
+      const totalChW = activeChannels.reduce((s, ch) => s + (channelWeights[ch] ?? 1), 0)
 
       const scored = filtered.map(clip => {
         const ch = clip.broadcaster_name || ''
         const group = byChannel[ch]
-
-        // Base weight = channel's share divided equally among its clips
         const chW = channelWeights[ch] ?? 1
         let weight = (chW / totalChW) / group.length
 
-        // Within-channel popularity boost
-        if (biasPopular) {
+        if (popW > 0) {
           const max = Math.max(...group.map(c => c.view_count || 0))
-          const score = max > 0 ? (clip.view_count || 0) / max : 0.5
-          weight *= (0.3 + 0.7 * score)
+          const norm = max > 0 ? (clip.view_count || 0) / max : 0.5
+          weight *= (1 - popW) + popW * norm
         }
 
-        // Within-channel recency boost
-        if (biasRecent) {
+        if (freshW > 0) {
           const times = group.map(c => new Date(c.created_at || 0).getTime())
           const max = Math.max(...times), min = Math.min(...times)
           const t = new Date(clip.created_at || 0).getTime()
-          const score = max > min ? (t - min) / (max - min) : 0.5
-          weight *= (0.3 + 0.7 * score)
+          const norm = max > min ? (t - min) / (max - min) : 0.5
+          weight *= (1 - freshW) + freshW * norm
         }
 
-        return { clip, key: -Math.log(Math.random()) / weight }
+        if (gameMatchW > 0 && currentGame) {
+          if (clip.game_name?.toLowerCase() === currentGame.toLowerCase()) weight *= (1 + gameMatchW)
+        }
+
+        return { clip, key: -Math.log(Math.random()) / Math.max(weight, 0.0001) }
       })
 
       return scored.sort((a, b) => a.key - b.key).map(s => s.clip)
@@ -227,6 +269,7 @@
         colQueues = {}
         colIndices = {}
         recentlyPlayed = new Map()
+        recentChannelHistory = []
         for (const col of (data.collections || [])) {
           colQueues[col.id]  = biasedShuffle(col.clips || [])
           colIndices[col.id] = prevIndices[col.id] ?? 0
@@ -244,7 +287,40 @@
       return Object.values(colQueues).some(q => q.length > 0)
     }
 
+    function matchesRule(rule) {
+      const { conditionType, game, titleKeywords } = rule
+      if (conditionType === 'game' || conditionType === 'both') {
+        if (!game || !currentGame) return false
+        if (currentGame.toLowerCase() !== game.toLowerCase()) return false
+      }
+      if (conditionType === 'title' || conditionType === 'both') {
+        if (!titleKeywords || !currentStreamTitle) return false
+        const keywords = titleKeywords.split(',').map(k => k.trim().toLowerCase()).filter(Boolean)
+        if (!keywords.some(k => currentStreamTitle.toLowerCase().includes(k))) return false
+      }
+      return true
+    }
+
+    function resolveAutoTarget(target) {
+      if (!target) return 'main'
+      if (target.targetType === 'weighted') {
+        const sets = (target.targetWeightedSets || []).filter(s => colQueues[s.collectionId]?.length > 0 && s.weight > 0)
+        if (!sets.length) return 'main'
+        const total = sets.reduce((s, w) => s + w.weight, 0)
+        let rand = Math.random() * total
+        for (const set of sets) { rand -= set.weight; if (rand <= 0) return set.collectionId }
+        return sets[sets.length - 1].collectionId
+      }
+      return target.targetCollectionId || 'main'
+    }
+
     function pickCollectionId() {
+      if (playCfg.mode === 'auto') {
+        for (const rule of (playCfg.autoRules || [])) {
+          if (matchesRule(rule)) return resolveAutoTarget(rule)
+        }
+        return resolveAutoTarget(playCfg.autoFallback || { targetType: 'single', targetCollectionId: 'main' })
+      }
       if (playCfg.mode !== 'weighted') {
         return playCfg.activeCollectionId || 'main'
       }
@@ -262,39 +338,80 @@
 
     function weightedRandom(clips) {
       if (!clips || !clips.length) return null
-      const { biasPopular, biasRecent, channelWeights = {} } = config
-      if (!biasPopular && !biasRecent && Object.keys(channelWeights).length === 0) {
-        return clips[Math.floor(Math.random() * clips.length)]
-      }
+      const { channelWeights = {} } = config
+      const sw = getSelWeights()
+      const popW       = (sw.popularity ?? 0) / 10
+      const freshW     = (sw.clipFreshness ?? 0) / 10
+      const distW      = (sw.respectDistribution ?? 0) / 10
+      const gameMatchW = (sw.gameMatch ?? 0) / 10
+      // Cooldown is always active, auto-derived from avoidReplays strength (min 12 min)
+      const coolMs     = Math.max(1, sw.avoidReplays ?? 6) * 12 * 60000
+      const hasCh      = Object.keys(channelWeights).length > 0
+
       const byChannel = {}
       for (const c of clips) {
         const ch = c.broadcaster_name || '';
         (byChannel[ch] = byChannel[ch] || []).push(c)
       }
-      // Filter out clips from channels with 0 weight
       const activeChannels = Object.keys(byChannel).filter(ch => (channelWeights[ch] ?? 1) > 0)
       const filtered = clips.filter(c => activeChannels.includes(c.broadcaster_name || ''))
-      if (filtered.length === 0) return clips[Math.floor(Math.random() * clips.length)] // Fallback if all channels are 0-weight
-      if (filtered.length === 1) return filtered[0]
+      const pool = filtered.length ? filtered : clips
+      if (pool.length === 1) return pool[0]
 
-      const channels = activeChannels
-      const totalChW = channels.reduce((s, ch) => s + (channelWeights[ch] ?? 1), 0)
-      const scored = filtered.map(clip => {
-        const ch = clip.broadcaster_name || '', group = byChannel[ch]
-        const chW = channelWeights[ch] ?? 1
-        let weight = (chW / totalChW) / group.length
-        if (biasPopular) {
-          const max = Math.max(...group.map(c => c.view_count || 0))
-          weight *= 0.3 + 0.7 * (max > 0 ? (clip.view_count || 0) / max : 0.5)
+      const totalChW = activeChannels.reduce((s, ch) => s + (channelWeights[ch] ?? 1), 0) || 1
+
+      // Actual recent channel distribution for distribution balancing
+      let recentActual = {}
+      if (distW > 0 && recentChannelHistory.length >= 5) {
+        const recent = recentChannelHistory.filter(h => h.time > Date.now() - coolMs)
+        if (recent.length > 0) {
+          for (const h of recent) recentActual[h.ch] = (recentActual[h.ch] || 0) + 1
+          for (const ch of Object.keys(recentActual)) recentActual[ch] /= recent.length
         }
-        if (biasRecent) {
+      }
+
+      const scored = pool.map(clip => {
+        const ch = clip.broadcaster_name || ''
+        const group = byChannel[ch] || [clip]
+        const chW = channelWeights[ch] ?? 1
+        let weight = hasCh ? (chW / totalChW) / group.length : 1 / pool.length
+
+        if (popW > 0) {
+          const max = Math.max(...group.map(c => c.view_count || 0))
+          const norm = max > 0 ? (clip.view_count || 0) / max : 0.5
+          weight *= (1 - popW) + popW * norm
+        }
+
+        if (freshW > 0) {
           const times = group.map(c => new Date(c.created_at || 0).getTime())
           const tmax = Math.max(...times), tmin = Math.min(...times)
           const t = new Date(clip.created_at || 0).getTime()
-          weight *= 0.3 + 0.7 * (tmax > tmin ? (t - tmin) / (tmax - tmin) : 0.5)
+          const norm = tmax > tmin ? (t - tmin) / (tmax - tmin) : 0.5
+          weight *= (1 - freshW) + freshW * norm
         }
-        return { clip, weight }
+
+        if (distW > 0 && Object.keys(recentActual).length > 0) {
+          const target = chW / totalChW
+          const actual = recentActual[ch] ?? 0
+          const deficit = target - actual
+          const factor = Math.max(0.1, Math.min(3.0, 1 + distW * 2 * (deficit / Math.max(target, 0.01))))
+          weight *= factor
+        }
+
+        if (gameMatchW > 0 && currentGame) {
+          if (clip.game_name?.toLowerCase() === currentGame.toLowerCase()) weight *= (1 + gameMatchW)
+        }
+
+        // Always-on replay penalty — strength scales with avoidReplays position
+        const last = recentlyPlayed.get(clip.id)
+        if (last !== undefined) {
+          const age = Math.min(1, (Date.now() - last) / coolMs)
+          weight *= Math.max(0.001, age)
+        }
+
+        return { clip, weight: Math.max(weight, 0.0001) }
       })
+
       const total = scored.reduce((s, w) => s + w.weight, 0)
       let rand = Math.random() * total
       for (const { clip, weight } of scored) { rand -= weight; if (rand <= 0) return clip }
@@ -308,8 +425,9 @@
       if (!q || !q.length) return null
 
       const now = Date.now()
+      const coolMs = Math.max(1, getSelWeights().avoidReplays ?? 6) * 12 * 60000
       for (const [id, ts] of recentlyPlayed) {
-        if (now - ts > RECENTLY_PLAYED_MS) recentlyPlayed.delete(id)
+        if (now - ts > coolMs) recentlyPlayed.delete(id)
       }
 
       let clip
@@ -341,6 +459,8 @@
       }
 
       recentlyPlayed.set(clip.id, now)
+      recentChannelHistory.push({ ch: clip.broadcaster_name || '', time: now })
+      if (recentChannelHistory.length > 200) recentChannelHistory.splice(0, 100)
       clip._collectionId = effectiveId
       return clip
     }
@@ -615,6 +735,8 @@
     } else if (isOBS) {
       connectWS()
       setTimeout(tryBegin, 1500)
+      fetchCurrentGame()
+      setInterval(fetchCurrentGame, 60000)
     }
 
     document.addEventListener('visibilitychange', () => {

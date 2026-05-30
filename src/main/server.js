@@ -6,7 +6,7 @@ import path from 'path'
 import axios from 'axios'
 import { fileURLToPath } from 'url'
 import { app as electronApp } from 'electron'
-import { getClipVideoUrl, receiveAuthToken } from './twitch.js'
+import { getClipVideoUrl, receiveAuthToken, fetchCurrentStream, getTwitchState } from './twitch.js'
 import { getClipsByStatus, getClipById, getSetting, getCollections, getPlaybackConfig, getShinyLayoutForScene, getShinyDevices, resolveDeviceShinyScene } from './db.js'
 import { showDeviceInScene } from './obs.js'
 
@@ -74,6 +74,28 @@ app.get('/api/clip-url/:id', async (req, res) => {
     res.json({ url })
   } catch (err) {
     res.status(500).json({ error: err.message })
+  }
+})
+
+app.get('/api/current-game', async (req, res) => {
+  try {
+    const { user } = getTwitchState()
+    if (!user?.login) return res.json({ game: null })
+    const { gameCategory } = await fetchCurrentStream(user.login)
+    res.json({ game: gameCategory })
+  } catch {
+    res.json({ game: null })
+  }
+})
+
+app.get('/api/current-stream', async (req, res) => {
+  try {
+    const { user } = getTwitchState()
+    if (!user?.login) return res.json({ game: null, title: null })
+    const { gameCategory, title } = await fetchCurrentStream(user.login)
+    res.json({ game: gameCategory ?? null, title: title ?? null })
+  } catch {
+    res.json({ game: null, title: null })
   }
 })
 
