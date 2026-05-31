@@ -6,7 +6,7 @@ const TWITCH_AUTH_URL = 'https://id.twitch.tv/oauth2/authorize'
 const TWITCH_API = 'https://api.twitch.tv/helix'
 const TWITCH_GQL = 'https://gql.twitch.tv/gql'
 const REDIRECT_URI = 'http://localhost:1102/auth/callback'
-const SCOPES = 'user:read:email chat:read user:write:chat moderator:manage:announcements moderator:read:followers channel:read:redemptions user:manage:whispers'
+const SCOPES = 'user:read:email chat:read user:write:chat moderator:manage:announcements moderator:read:followers channel:read:redemptions user:manage:whispers clips:edit'
 const DEFAULT_CLIENT_ID = '0ue4vlu07adeae3lxj3e7euyuhvmyx'
 // Twitch's internal GQL client ID — required for playback token endpoint
 const GQL_CLIENT_ID = 'kimne78kx3ncx6brgo4mv6wki5h1ko'
@@ -438,6 +438,23 @@ export async function createEventSubSubscription(sessionId, broadcasterId, token
     )
     return true
   } catch { return false }
+}
+
+// Deletes clips from the broadcaster's channel. Requires clips:edit scope.
+// Returns { deleted: string[], failed: string[] }
+export async function deleteClipsOnTwitch(clipIds) {
+  const failed = []
+  for (let i = 0; i < clipIds.length; i += 100) {
+    const batch = clipIds.slice(i, i + 100)
+    const qs = batch.map(id => `id=${encodeURIComponent(id)}`).join('&')
+    try {
+      await axios.delete(`${TWITCH_API}/clips?${qs}`, { headers: apiHeaders() })
+    } catch {
+      failed.push(...batch)
+    }
+    if (i + 100 < clipIds.length) await new Promise(r => setTimeout(r, 250))
+  }
+  return { deleted: clipIds.filter(id => !failed.includes(id)), failed }
 }
 
 export async function getClipVideoUrl(clipId) {

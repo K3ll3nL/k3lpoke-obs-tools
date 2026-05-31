@@ -4,7 +4,7 @@ import {
   Plus, X, ArrowLeft, Loader, Info, ChevronDown, ChevronUp,
   Bot, Megaphone, AlertTriangle, Dice6, Music, FileText, Eye,
   Percent, Clock, MessageSquare, Filter, Shuffle, ArrowUp, ArrowDown,
-  Radio, Terminal, Zap, Sun, Gift,
+  Radio, Terminal, Zap, Sun, Gift, Users,
 } from 'lucide-react'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -42,6 +42,7 @@ function emptyConsideration(type) {
     case 'map_variable':      return { ...base, source: '', mappings: [{ id: uid(), from: '', to: '' }] }
     case 'transform_variable': return { ...base, source: '', op: 'uppercase', opArgs: {} }
     case 'recent_redemption':  return { ...base, rewardId: '', minutes: 5, invert: false }
+    case 'filter_users':      return { ...base, mode: 'blacklist', users: [], roles: [] }
     default:                  return base
   }
 }
@@ -168,6 +169,7 @@ const ADVANCED_VARS = [
 
 const CONSIDERATION_META = {
   chance:             { label: 'Only run sometimes',     icon: Percent,       color: 'amber' },
+  filter_users:       { label: 'Filter users',           icon: Users,         color: 'rose' },
   language_filter:    { label: 'Language filter',         icon: Filter,        color: 'blue' },
   wait:               { label: 'Wait a while',            icon: Clock,         color: 'purple' },
   chat_activity:      { label: 'Is chat moving?',         icon: MessageSquare, color: 'teal' },
@@ -177,6 +179,17 @@ const CONSIDERATION_META = {
   transform_variable: { label: 'Transform variable',      icon: Zap,           color: 'violet' },
   recent_redemption:  { label: 'Recent redemption',       icon: Gift,          color: 'rose' },
 }
+
+const CONSIDERATION_COLS = [
+  [
+    { label: 'Logic',    types: ['chance', 'filter_users'] },
+    { label: 'Chat',     types: ['language_filter', 'chat_activity'] },
+  ],
+  [
+    { label: 'Timing',   types: ['wait', 'time_of_day'] },
+    { label: 'External', types: ['obs_source', 'recent_redemption'] },
+  ],
+]
 
 const COLOR_CLASSES = {
   amber:  { chip: 'bg-amber-900/20 border-amber-700/50 text-amber-400',  dot: 'bg-amber-400' },
@@ -1328,6 +1341,7 @@ function ConsiderationRow({ consideration, onChange, onRemove, onMoveUp, onMoveD
   const [obsSources, setObsSources] = useState([])
   const [obsScenes, setObsScenes] = useState([])
   const [wordsDraft, setWordsDraft] = useState(null)
+  const [usersDraft, setUsersDraft] = useState(null)
   const [rewards, setRewards] = useState([])
   const [rewardsLoading, setRewardsLoading] = useState(false)
   const meta = CONSIDERATION_META[consideration.type] ?? { label: consideration.type, icon: Info, color: 'teal' }
@@ -1383,6 +1397,56 @@ function ConsiderationRow({ consideration, onChange, onRemove, onMoveUp, onMoveD
           <label className="text-twitch-muted text-xs w-24 shrink-0">Probability</label>
           <PercentInput value={consideration.percent} onChange={v => p('percent', v)} />
           <span className="text-twitch-muted text-xs text-right flex-1">fires {consideration.percent}% of the time</span>
+        </div>
+      )}
+
+      {consideration.type === 'filter_users' && (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <label className="text-twitch-muted text-xs w-20 shrink-0">Mode</label>
+            <div className="flex gap-1">
+              {[['blacklist', 'Block'], ['whitelist', 'Allow only']].map(([val, lbl]) => (
+                <button key={val} onClick={() => p('mode', val)}
+                  className={`text-xs px-3 py-1 rounded border transition-colors ${
+                    (consideration.mode ?? 'blacklist') === val
+                      ? 'bg-teal-900/30 border-teal-600 text-teal-400'
+                      : 'border-twitch-border text-twitch-muted hover:border-twitch-muted'
+                  }`}>{lbl}</button>
+              ))}
+            </div>
+          </div>
+          <div className="flex items-start gap-2">
+            <label className="text-twitch-muted text-xs w-20 shrink-0 mt-1">Roles</label>
+            <div className="flex flex-wrap gap-1">
+              {[['broadcaster', 'Broadcaster'], ['mod', 'Mod'], ['vip', 'VIP'], ['subscriber', 'Sub']].map(([val, lbl]) => {
+                const active = (consideration.roles ?? []).includes(val)
+                return (
+                  <button key={val} onClick={() => p('roles', active
+                    ? (consideration.roles ?? []).filter(r => r !== val)
+                    : [...(consideration.roles ?? []), val]
+                  )}
+                    className={`text-xs px-3 py-1 rounded border transition-colors ${
+                      active ? 'bg-teal-900/30 border-teal-600 text-teal-400'
+                             : 'border-twitch-border text-twitch-muted hover:border-twitch-muted'
+                    }`}>{lbl}</button>
+                )
+              })}
+            </div>
+          </div>
+          <div className="space-y-1">
+            <label className="text-twitch-muted text-xs">Usernames <span className="opacity-60">(one per line)</span></label>
+            <textarea
+              value={usersDraft ?? (consideration.users ?? []).join('\n')}
+              onFocus={() => setUsersDraft((consideration.users ?? []).join('\n'))}
+              onChange={e => setUsersDraft(e.target.value)}
+              onBlur={() => { p('users', (usersDraft ?? '').split('\n').map(u => u.trim().toLowerCase()).filter(Boolean)); setUsersDraft(null) }}
+              rows={Math.max(2, (usersDraft ?? (consideration.users ?? []).join('\n')).split('\n').length)}
+              placeholder="username1&#10;username2"
+              className="w-full text-xs bg-twitch-surface border border-twitch-border rounded px-2 py-1.5 text-twitch-text focus:outline-none focus:border-teal-600 resize-none" />
+          </div>
+          {(consideration.roles ?? []).length === 0 && (consideration.users ?? []).length === 0 && (
+            <p className="text-amber-400/70 text-xs">Add at least one role or username to filter.</p>
+          )}
         </div>
       )}
 
@@ -2347,6 +2411,7 @@ export default function ChatTriggerEditor() {
   const [testResults, setTestResults] = useState(null)
   const [toast, setToast] = useState(null)
   const [addConsidMenu, setAddConsidMenu] = useState(false)
+  const [addVarMenu, setAddVarMenu] = useState(false)
   const [addConditionMenu, setAddConditionMenu] = useState(false)
   const [editingConditionId, setEditingConditionId] = useState(null)
   const optToastShown = useRef(false)
@@ -2764,7 +2829,7 @@ export default function ChatTriggerEditor() {
           <div className="flex items-center justify-between">
             <div>
               <h2 className="text-twitch-text text-sm font-medium">Special Considerations</h2>
-              {(trigger.considerations ?? []).length > 1 && (
+              {(trigger.considerations ?? []).filter(c => c.type !== 'map_variable' && c.type !== 'transform_variable').length > 1 && (
                 <p className="text-twitch-muted text-xs mt-1">Executed in order from top to bottom</p>
               )}
             </div>
@@ -2775,35 +2840,132 @@ export default function ChatTriggerEditor() {
                 className="flex items-center gap-1 text-xs text-teal-500 border border-teal-500 hover:border-teal-400 hover:text-teal-400 rounded-full px-4 py-1 transition-colors">
                 <Plus size={12} /> Add consideration
               </button>
-              {addConsidMenu && (
-                <div className="absolute right-0 mt-1 bg-twitch-surface border border-twitch-border rounded-lg shadow-lg z-20 py-1 min-w-44">
-                  {Object.entries(CONSIDERATION_META).map(([type, meta]) => {
-                    const Icon = meta.icon
+              {addConsidMenu && (() => {
+                const renderItem = type => {
+                  const meta = CONSIDERATION_META[type]
+                  if (!meta) return null
+                  const Icon = meta.icon
+                  const colors = COLOR_CLASSES[meta.color] ?? COLOR_CLASSES.teal
+                  return (
+                    <button key={type} onClick={() => addConsideration(type)}
+                      className="flex items-center gap-2 w-full text-left text-xs px-2 py-1.5 rounded-lg hover:bg-twitch-dark text-twitch-text transition-colors">
+                      <span className={`flex items-center justify-center w-5 h-5 rounded shrink-0 ${colors.chip}`}>
+                        <Icon size={10} />
+                      </span>
+                      <span>{meta.label}</span>
+                    </button>
+                  )
+                }
+                return (
+                  <div className="absolute left-1/2 -translate-x-1/2 mt-1 bg-twitch-surface border border-twitch-border rounded-xl shadow-xl z-20 p-3 w-96">
+                    <div className="grid grid-cols-2 gap-x-4">
+                      {CONSIDERATION_COLS.map((col, ci) => (
+                        <div key={ci} className="space-y-3">
+                          {col.map(group => (
+                            <div key={group.label}>
+                              <p className="text-twitch-muted/60 text-[10px] uppercase tracking-wider font-medium mb-1 px-1">{group.label}</p>
+                              {group.types.map(renderItem)}
+                            </div>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )
+              })()}
+            </div>
+          </div>
+          <div className="space-y-3">
+            {(trigger.considerations ?? []).filter(c => c.type !== 'map_variable' && c.type !== 'transform_variable').map((c) => {
+              const allConsids = trigger.considerations ?? []
+              const globalIdx = allConsids.indexOf(c)
+              return (
+                <ConsiderationRow key={c.id} consideration={c}
+                  onChange={updated => updateConsideration(c.id, updated)}
+                  onRemove={() => removeConsideration(c.id)}
+                  onMoveUp={() => moveConsiderationUp(c.id)}
+                  onMoveDown={() => moveConsiderationDown(c.id)}
+                  canMoveUp={globalIdx > 0}
+                  canMoveDown={globalIdx < allConsids.length - 1}
+                  paramNames={allParamNames}
+                  paramTypes={allParamTypes} />
+              )
+            })}
+          </div>
+        </section>
+
+        {/* Variable Considerations — only when pattern/params define variables */}
+        {allParamNames.length > 0 && (() => {
+          const varConsids = (trigger.considerations ?? []).filter(c => c.type === 'map_variable' || c.type === 'transform_variable')
+          return (
+            <section className="space-y-3 p-4 bg-twitch-surface border border-twitch-border rounded-xl">
+              <div className="flex items-center justify-between">
+                <h2 className="text-twitch-text text-sm font-medium">Variables</h2>
+                {varConsids.length > 0 && (
+                  <div className="relative">
+                    <button onClick={() => { setAddVarMenu(o => !o); setAddConsidMenu(false) }}
+                      className="flex items-center gap-1 text-xs text-twitch-muted hover:text-teal-400 transition-colors">
+                      <Plus size={13} /> Add
+                    </button>
+                    {addVarMenu && (
+                      <div className="absolute right-0 top-full mt-2 bg-twitch-dark border border-twitch-border rounded-xl shadow-xl z-20 p-2 w-52">
+                        {[['map_variable', Shuffle, 'Map variable'], ['transform_variable', Zap, 'Transform variable']].map(([type, Icon, label]) => {
+                          const colors = COLOR_CLASSES.violet
+                          return (
+                            <button key={type} onClick={() => addConsideration(type)}
+                              className="flex items-center gap-2 w-full text-left text-xs px-2 py-1.5 rounded-lg hover:bg-twitch-surface text-twitch-text transition-colors">
+                              <span className={`flex items-center justify-center w-5 h-5 rounded shrink-0 ${colors.chip}`}>
+                                <Icon size={10} />
+                              </span>
+                              {label}
+                            </button>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+              {varConsids.length === 0 ? (
+                <div className="grid grid-cols-2 gap-3 pt-1">
+                  {[
+                    { type: 'map_variable', icon: Shuffle, title: 'Map variable', desc: 'Replace one captured value with another — great for translating user input.' },
+                    { type: 'transform_variable', icon: Zap, title: 'Transform variable', desc: 'Reformat a value — uppercase, lowercase, trim spaces, and more.' },
+                  ].map(({ type, icon: Icon, title, desc }) => (
+                    <button key={type} onClick={() => addConsideration(type)}
+                      className="flex flex-col gap-2 p-3 rounded-lg border border-twitch-border hover:border-violet-600/40 hover:bg-violet-900/10 text-left transition-colors">
+                      <span className="flex items-center gap-2">
+                        <span className="flex items-center justify-center w-5 h-5 rounded bg-violet-900/20 border border-violet-700/50 text-violet-400 shrink-0">
+                          <Icon size={10} />
+                        </span>
+                        <span className="text-twitch-text text-xs font-medium">{title}</span>
+                      </span>
+                      <span className="text-twitch-muted text-[11px] leading-relaxed">{desc}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {varConsids.map((c) => {
+                    const allConsids = trigger.considerations ?? []
+                    const globalIdx = allConsids.indexOf(c)
                     return (
-                      <button key={type} onClick={() => addConsideration(type)}
-                        className="flex items-center gap-2 w-full text-left text-xs px-3 py-2 hover:bg-twitch-dark text-twitch-text transition-colors">
-                        <Icon size={11} className="text-twitch-muted" /> {meta.label}
-                      </button>
+                      <ConsiderationRow key={c.id} consideration={c}
+                        onChange={updated => updateConsideration(c.id, updated)}
+                        onRemove={() => removeConsideration(c.id)}
+                        onMoveUp={() => moveConsiderationUp(c.id)}
+                        onMoveDown={() => moveConsiderationDown(c.id)}
+                        canMoveUp={globalIdx > 0}
+                        canMoveDown={globalIdx < allConsids.length - 1}
+                        paramNames={allParamNames}
+                        paramTypes={allParamTypes} />
                     )
                   })}
                 </div>
               )}
-            </div>
-          </div>
-          <div className="space-y-3">
-            {(trigger.considerations ?? []).map((c, idx) => (
-              <ConsiderationRow key={c.id} consideration={c}
-                onChange={updated => updateConsideration(c.id, updated)}
-                onRemove={() => removeConsideration(c.id)}
-                onMoveUp={() => moveConsiderationUp(c.id)}
-                onMoveDown={() => moveConsiderationDown(c.id)}
-                canMoveUp={idx > 0}
-                canMoveDown={idx < (trigger.considerations ?? []).length - 1}
-                paramNames={allParamNames}
-                paramTypes={allParamTypes} />
-            ))}
-          </div>
-        </section>
+            </section>
+          )
+        })()}
 
         {/* Response routing logic */}
         {(() => {

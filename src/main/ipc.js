@@ -4,7 +4,7 @@ import path from 'path'
 import { autoUpdater } from 'electron-updater'
 import {
   initTwitch, getTwitchState, setClientId, startOAuthFlow, logout,
-  fetchUserByLogin, fetchClips, getClipVideoUrl, checkClipsExist, fetchClipDetails, searchChannels as searchTwitchChannels,
+  fetchUserByLogin, fetchClips, getClipVideoUrl, checkClipsExist, fetchClipDetails, deleteClipsOnTwitch, searchChannels as searchTwitchChannels,
   validateTokenScopes, startBotOAuthFlow, logoutBot as logoutBotAccount,
   sendChatMessage, sendAnnouncement, sendWhisper, validateBotTokenScopes, fetchFollowage as fetchFollowageApi, fetchCurrentStream, searchCategories,
   fetchCustomRewards,
@@ -12,7 +12,8 @@ import {
 import { connectOBS, disconnectOBS, isConnected, getSceneList, addBrowserSource, switchScene, getSourceList, getSceneItemList, showDeviceInScene, setSourceVisibility, playVideoInSource, getCurrentScene, checkChatTriggersPlayer, onSceneItemEnableStateChanged, getSceneItemListFull, createScene, removeScene, setSceneItemTransform, createSceneItem, removeSceneItem, duplicateSceneItem, setSceneItemIndex, getInputSettings, setInputSettingsObs, removeInput, getGroupSceneItemList, removeInputFull, getSceneCollectionList, setCurrentSceneCollection, createSceneCollection } from './obs.js'
 import {
   getClipsByStatus, getAllClips, getNewClips, setClipStatus, bulkSetStatus, removeClip, reorderQueue,
-  upsertClip, clipExists, getChannels, upsertChannel, removeChannel,
+  upsertClip, batchUpsertClips, clipExists, getChannels, upsertChannel, removeChannel,
+  scheduleClipDeletion, bulkScheduleClipDeletion, getScheduledForDeletion, getOverdueForDeletion,
   updateChannelCursor, getSetting, setSetting, getAllSettings, setClipVolume, setClipTrim, setClipEnvelope, updateClipThumbnails,
   getCollections, createCollection, updateCollection, deleteCollection,
   addClipToCollection, removeClipFromCollection, getCollectionClips, getCollectionMemberships,
@@ -55,26 +56,15 @@ export async function runAutoFetch(win) {
           limit: 100,
           startedAt: since ?? undefined
         })
-        for (const clip of result.clips) {
-          const isNew = !clipExists(clip.id)
-          upsertClip(clip)
-          if (isNew) totalAdded++
-        }
+        const newClips = result.clips.filter(c => !clipExists(c.id))
+        totalAdded += newClips.length
+        batchUpsertClips(result.clips)
         cursor = result.cursor
         updateChannelCursor(ch.name, cursor)
         if (cursor) await new Promise(r => setTimeout(r, 250))
       } while (cursor)
     } catch {
       // skip failed channel, cursor already saved
-    }
-    try {
-      const allIds = getAllClips(ch.name).map(c => c.id)
-      if (allIds.length > 0) {
-        const existing = await checkClipsExist(allIds)
-        for (const id of allIds) { if (!existing.has(id)) removeClip(id) }
-      }
-    } catch {
-      // don't block fetch if validation fails
     }
   }
   if (totalAdded > 0) {
@@ -141,11 +131,9 @@ export async function registerIpcHandlers(mainWindow) {
       try {
         do {
           const result = await fetchClips({ broadcasterId: ch.broadcaster_id, cursor, limit: 100 })
-          for (const clip of result.clips) {
-            const isNew = !clipExists(clip.id)
-            upsertClip(clip)
-            if (isNew) added++
-          }
+          const newClips = result.clips.filter(c => !clipExists(c.id))
+          added += newClips.length
+          batchUpsertClips(result.clips)
           cursor = result.cursor
           // Persist cursor after every page — if interrupted, next run resumes here
           updateChannelCursor(ch.name, cursor)
@@ -155,15 +143,6 @@ export async function registerIpcHandlers(mainWindow) {
       } catch (e) {
         // Cursor is already saved — next fetch will resume from the last successful page
         results.push({ channel: ch.name, added, error: e.message })
-      }
-      try {
-        const allIds = getAllClips(ch.name).map(c => c.id)
-        if (allIds.length > 0) {
-          const existing = await checkClipsExist(allIds)
-          for (const id of allIds) { if (!existing.has(id)) removeClip(id) }
-        }
-      } catch {
-        // don't block fetch if validation fails
       }
     }
     notifyQueueUpdated()
@@ -477,6 +456,38 @@ export async function registerIpcHandlers(mainWindow) {
 
   handle('twitch:fetchNewClips', async () => runAutoFetch(mainWindow))
 
+  handle('twitch:deleteClips', async ({ ids }) => {
+    const result = await deleteClipsOnTwitch(ids)
+    for (const id of result.deleted) removeClip(id)
+    if (result.deleted.length > 0) notifyQueueUpdated()
+    return result
+  })
+
+  handle('clips:scheduleDelete', ({ id, deleteAfter }) => scheduleClipDeletion(id, deleteAfter))
+
+  handle('clips:bulkScheduleDelete', ({ ids, deleteAfter }) => bulkScheduleClipDeletion(ids, deleteAfter))
+
+  handle('clips:getScheduledForDeletion', () => getScheduledForDeletion())
+
+  handle('clips:executeScheduledDeletions', async ({ overdudeOnly = true } = {}) => {
+    const candidates = overdudeOnly ? getOverdueForDeletion() : getScheduledForDeletion()
+    if (!candidates.length) return { deleted: [], failed: [], removed: 0 }
+    const channels = getChannels()
+    const ownIds = new Set(channels.filter(c => c.is_own).map(c => c.broadcaster_id))
+    const ownClipIds = candidates.filter(c => ownIds.has(c.broadcaster_id)).map(c => c.id)
+    const otherClipIds = candidates.filter(c => !ownIds.has(c.broadcaster_id)).map(c => c.id)
+    let deleted = [], failed = []
+    if (ownClipIds.length) {
+      const result = await deleteClipsOnTwitch(ownClipIds)
+      deleted = result.deleted
+      failed = result.failed
+    }
+    const toRemove = [...deleted, ...otherClipIds]
+    for (const id of toRemove) removeClip(id)
+    if (toRemove.length > 0) notifyQueueUpdated()
+    return { deleted, failed, removed: otherClipIds.length }
+  })
+
   // ── Marketplace ───────────────────────────────────────────────────────────
 
   // ── Collections ───────────────────────────────────────────────────────────
@@ -743,4 +754,22 @@ export async function registerIpcHandlers(mainWindow) {
   handle('app:installUpdate', () => {
     autoUpdater.quitAndInstall()
   })
+
+  // Auto-execute overdue scheduled deletions on startup (fire and forget)
+  setTimeout(async () => {
+    try {
+      const overdue = getOverdueForDeletion()
+      if (!overdue.length) return
+      const channels = getChannels()
+      const ownIds = new Set(channels.filter(c => c.is_own).map(c => c.broadcaster_id))
+      const ownIds_ = overdue.filter(c => ownIds.has(c.broadcaster_id)).map(c => c.id)
+      const otherIds = overdue.filter(c => !ownIds.has(c.broadcaster_id)).map(c => c.id)
+      if (ownIds_.length) {
+        const result = await deleteClipsOnTwitch(ownIds_)
+        for (const id of result.deleted) removeClip(id)
+      }
+      for (const id of otherIds) removeClip(id)
+      if (overdue.length) notifyQueueUpdated()
+    } catch {}
+  }, 5000)
 }

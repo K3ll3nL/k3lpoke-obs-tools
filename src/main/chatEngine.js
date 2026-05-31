@@ -882,6 +882,20 @@ async function evaluateConsiderations(considerations, msg, triggerId, opts) {
         if (!pass) return { pass: false, blockedBy: 'recent_redemption' }
         break
       }
+      case 'filter_users': {
+        const users = (c.users ?? []).map(u => u.toLowerCase().trim()).filter(Boolean)
+        const roles = c.roles ?? []
+        if (users.length === 0 && roles.length === 0) break
+        const inUsers = users.includes(msg.username)
+        const inRoles = (roles.includes('broadcaster') && msg.isBroadcaster) ||
+                        (roles.includes('mod') && msg.isMod) ||
+                        (roles.includes('vip') && msg.isVip) ||
+                        (roles.includes('subscriber') && msg.isSubscriber)
+        const matches = inUsers || inRoles
+        if (c.mode === 'whitelist' && !matches) return { pass: false, blockedBy: 'filter_users (not whitelisted)' }
+        if (c.mode !== 'whitelist' && matches) return { pass: false, blockedBy: 'filter_users (blacklisted)' }
+        break
+      }
       case 'map_variable':
       case 'transform_variable':
         break // applied after ctx.params is built; does not affect pass/fail

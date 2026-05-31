@@ -111,6 +111,21 @@ export function upsertClip(clip) {
   save()
 }
 
+// Upsert multiple clips, calling save() once at the end.
+export function batchUpsertClips(clips) {
+  for (const clip of clips) {
+    const existing = data.clips.find(c => c.id === clip.id)
+    if (existing) {
+      if (clip.game_name !== undefined) existing.game_name = clip.game_name
+      if (clip.view_count !== undefined) existing.view_count = clip.view_count
+      if (clip.thumbnail_url !== undefined) existing.thumbnail_url = clip.thumbnail_url
+    } else {
+      data.clips.push({ ...clip, status: 'pending', queue_position: null, added_at: new Date().toISOString(), volume: 1.0 })
+    }
+  }
+  save()
+}
+
 export function getClipById(id) {
   return data.clips.find(c => c.id === id) ?? null
 }
@@ -166,7 +181,7 @@ export function getNewClips(since) {
 }
 
 export function getAllClips(broadcasterName) {
-  let clips = data.clips
+  let clips = data.clips.filter(c => !c.delete_after)
   if (broadcasterName) {
     const name = broadcasterName.toLowerCase()
     clips = clips.filter(c => c.broadcaster_name?.toLowerCase() === name)
@@ -181,7 +196,7 @@ export function getAllClips(broadcasterName) {
 
 export function getClipsByStatus(status) {
   return data.clips
-    .filter(c => c.status === status)
+    .filter(c => !c.delete_after && c.status === status)
     .sort((a, b) => {
       if (a.queue_position != null && b.queue_position != null) return a.queue_position - b.queue_position
       return new Date(a.added_at) - new Date(b.added_at)
@@ -203,6 +218,32 @@ export function setClipStatus(id, status) {
 
 export function bulkSetStatus(ids, status) {
   for (const id of ids) setClipStatus(id, status)
+}
+
+// Schedule a clip for deletion at a specific ISO date string. Pass null to unschedule.
+export function scheduleClipDeletion(id, deleteAfter) {
+  const clip = data.clips.find(c => c.id === id)
+  if (!clip) return
+  if (deleteAfter) clip.delete_after = deleteAfter; else delete clip.delete_after
+  save()
+}
+
+export function bulkScheduleClipDeletion(ids, deleteAfter) {
+  for (const id of ids) {
+    const clip = data.clips.find(c => c.id === id)
+    if (!clip) continue
+    if (deleteAfter) clip.delete_after = deleteAfter; else delete clip.delete_after
+  }
+  save()
+}
+
+export function getScheduledForDeletion() {
+  return [...data.clips.filter(c => c.delete_after)].sort((a, b) => new Date(a.delete_after) - new Date(b.delete_after))
+}
+
+export function getOverdueForDeletion() {
+  const now = new Date().toISOString()
+  return data.clips.filter(c => c.delete_after && c.delete_after <= now)
 }
 
 export function removeClip(id) {

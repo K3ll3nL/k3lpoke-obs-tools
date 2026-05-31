@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('api', {
     fetchAllChannels: () => invoke('twitch:fetchAllChannels'),
     fetchNewClips: () => invoke('twitch:fetchNewClips'),
     searchCategories: (query) => invoke('twitch:searchCategories', { query }),
+    deleteClips: (ids) => invoke('twitch:deleteClips', { ids }),
     onAuthChanged: (cb) => ipcRenderer.on('twitch:auth-changed', (_, d) => cb(d)),
     onNewClips: (cb) => ipcRenderer.on('twitch:new-clips', (_, d) => cb(d))
   },
@@ -37,6 +38,10 @@ contextBridge.exposeInMainWorld('api', {
     bulkSetStatus: (ids, status) => invoke('clips:bulkSetStatus', { ids, status }),
     remove: (id) => invoke('clips:remove', { id }),
     reorder: (ids) => invoke('clips:reorder', { ids }),
+    scheduleDelete: (id, deleteAfter) => invoke('clips:scheduleDelete', { id, deleteAfter }),
+    bulkScheduleDelete: (ids, deleteAfter) => invoke('clips:bulkScheduleDelete', { ids, deleteAfter }),
+    getScheduledForDeletion: () => invoke('clips:getScheduledForDeletion'),
+    executeScheduledDeletions: (overdueOnly) => invoke('clips:executeScheduledDeletions', { overdueOnly }),
     refreshThumbnail: (id) => invoke('clips:refreshThumbnail', { id }),
     saveThumbnail: (id, dataUrl) => invoke('clips:saveThumbnail', { id, dataUrl }),
   },

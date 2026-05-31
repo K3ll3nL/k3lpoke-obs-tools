@@ -17,7 +17,7 @@ export const APP_REGISTRY = [
     gradient: 'from-violet-600 to-purple-800',
     defaultRoute: '/updates',
     core: true,
-    version: '1.0.5',
+    version: '1.1.0',
     navItems: [
       { to: '/updates',     icon: Bell,           label: 'Updates'     },
       { to: '/review',      icon: ClipboardCheck, label: 'Review'      },
@@ -83,7 +83,7 @@ export const APP_REGISTRY = [
     defaultRoute: '/chat-triggers',
     routePrefix: '/chat-triggers',
     core: false,
-    version: '0.1.2',
+    version: '0.1.3',
     navItems: [
       { to: '/chat-triggers',          icon: Zap,      label: 'Triggers', end: true },
       { to: '/chat-triggers/settings', icon: Settings, label: 'Settings'              },
