@@ -111,6 +111,7 @@ export default function ClipSettings() {
     biasPopular: false,
     biasRecent: false,
     channelWeights: {},
+    noConsecutiveChannel: false,
     selectionWeights: {
       avoidReplays: 10,
       respectDistribution: 7,
@@ -384,12 +385,22 @@ export default function ClipSettings() {
                         </div>
                       </div>
                       {key === 'avoidReplays' && isFirst && (
-                        <div className="px-3 pb-3 pt-1.5 border-t border-twitch-border/50 mt-0">
+                        <div className="px-3 pb-3 pt-1.5 border-t border-twitch-border/50">
                           <Toggle
                             label="Show every clip before repeating"
                             description="Play through your whole queue once before any clip comes up again."
                             checked={overlayConfig.playAllBeforeLoop ?? true}
                             onChange={v => setOverlayConfig(p => ({ ...p, playAllBeforeLoop: v }))}
+                          />
+                        </div>
+                      )}
+                      {key === 'respectDistribution' && isFirst && (
+                        <div className="px-3 pb-3 pt-1.5 border-t border-twitch-border/50">
+                          <Toggle
+                            label="Never play the same channel twice in a row"
+                            description="If the next clip would be from the same channel, a clip from a different channel is picked instead."
+                            checked={overlayConfig.noConsecutiveChannel ?? false}
+                            onChange={v => setOverlayConfig(p => ({ ...p, noConsecutiveChannel: v }))}
                           />
                         </div>
                       )}

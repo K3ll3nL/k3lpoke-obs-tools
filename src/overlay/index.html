@@ -230,11 +230,13 @@
 
       const totalChW = activeChannels.reduce((s, ch) => s + (channelWeights[ch] ?? 1), 0)
 
+      const playDur = c => Math.max(1, (c.trimEnd ?? c.duration ?? 60) - (c.trimStart ?? 0))
       const scored = filtered.map(clip => {
         const ch = clip.broadcaster_name || ''
         const group = byChannel[ch]
         const chW = channelWeights[ch] ?? 1
-        let weight = (chW / totalChW) / group.length
+        const groupDur = group.reduce((s, c) => s + playDur(c), 0) || 1
+        let weight = (chW / totalChW) * (playDur(clip) / groupDur)
 
         if (popW > 0) {
           const max = Math.max(...group.map(c => c.view_count || 0))
@@ -359,14 +361,17 @@
       if (pool.length === 1) return pool[0]
 
       const totalChW = activeChannels.reduce((s, ch) => s + (channelWeights[ch] ?? 1), 0) || 1
+      const clipPlayDur = c => Math.max(1, (c.trimEnd ?? c.duration ?? 60) - (c.trimStart ?? 0))
+      const totalPoolDur = pool.reduce((s, c) => s + clipPlayDur(c), 0) || 1
 
-      // Actual recent channel distribution for distribution balancing
+      // Actual recent channel distribution for distribution balancing (by play time, not clip count)
       let recentActual = {}
       if (distW > 0 && recentChannelHistory.length >= 5) {
         const recent = recentChannelHistory.filter(h => h.time > Date.now() - coolMs)
         if (recent.length > 0) {
-          for (const h of recent) recentActual[h.ch] = (recentActual[h.ch] || 0) + 1
-          for (const ch of Object.keys(recentActual)) recentActual[ch] /= recent.length
+          for (const h of recent) recentActual[h.ch] = (recentActual[h.ch] || 0) + (h.dur || 60)
+          const totalDur = Object.values(recentActual).reduce((s, v) => s + v, 0)
+          for (const ch of Object.keys(recentActual)) recentActual[ch] /= totalDur
         }
       }
 
@@ -374,7 +379,9 @@
         const ch = clip.broadcaster_name || ''
         const group = byChannel[ch] || [clip]
         const chW = channelWeights[ch] ?? 1
-        let weight = hasCh ? (chW / totalChW) / group.length : 1 / pool.length
+        const clipDur = clipPlayDur(clip)
+        const groupDur = group.reduce((s, c) => s + clipPlayDur(c), 0) || 1
+        let weight = hasCh ? (chW / totalChW) * (clipDur / groupDur) : clipDur / totalPoolDur
 
         if (popW > 0) {
           const max = Math.max(...group.map(c => c.view_count || 0))
@@ -458,8 +465,17 @@
         }
       }
 
+      // If no-consecutive-channel is on and this clip is from the same channel as what's playing, swap it out
+      if (config.noConsecutiveChannel && activeClip?.broadcaster_name && clip?.broadcaster_name === activeClip.broadcaster_name) {
+        const fresh = q.filter(c => c.broadcaster_name !== activeClip.broadcaster_name && !recentlyPlayed.has(c.id))
+        const any   = q.filter(c => c.broadcaster_name !== activeClip.broadcaster_name)
+        const alt   = weightedRandom(fresh.length ? fresh : (any.length ? any : null))
+        if (alt) clip = alt
+      }
+
       recentlyPlayed.set(clip.id, now)
-      recentChannelHistory.push({ ch: clip.broadcaster_name || '', time: now })
+      const dur = Math.max(1, (clip.trimEnd ?? clip.duration ?? 60) - (clip.trimStart ?? 0))
+      recentChannelHistory.push({ ch: clip.broadcaster_name || '', time: now, dur })
       if (recentChannelHistory.length > 200) recentChannelHistory.splice(0, 100)
       clip._collectionId = effectiveId
       return clip
