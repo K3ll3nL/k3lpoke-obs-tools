@@ -457,22 +457,54 @@ export async function deleteClipsOnTwitch(clipIds) {
   return { deleted: clipIds.filter(id => !failed.includes(id)), failed }
 }
 
-export async function getClipVideoUrl(clipId) {
+const CLIP_TOKEN_OP = 'VideoAccessToken_Clip'
+const CLIP_TOKEN_HASH_KEY = 'gqlHash_VideoAccessToken_Clip'
+const CLIP_TOKEN_HASH_FALLBACK = '993d9a5131f15a37bd16f32342c44ed1e0b1a9b968c6afdb662d2cddd595f6c5'
+
+async function scrapeGQLHash(operationName) {
+  const page = await axios.get('https://www.twitch.tv/', {
+    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36' },
+    timeout: 10000
+  })
+  const bundleUrls = [...page.data.matchAll(/src="(https:\/\/[^"]+\.js)"/g)].map(m => m[1])
+  for (const url of bundleUrls.slice(0, 8)) {
+    try {
+      const js = await axios.get(url, { timeout: 15000 })
+      const match = js.data.match(new RegExp(`"${operationName}"[\\s\\S]{0,300}?"sha256Hash":"([a-f0-9]{64})"`))
+      if (match) return match[1]
+    } catch { /* try next bundle */ }
+  }
+  throw new Error(`Could not find GQL hash for ${operationName} — update manually`)
+}
+
+async function fetchClipToken(clipId, hash) {
   const res = await axios.post(TWITCH_GQL, {
-    operationName: 'VideoAccessToken_Clip',
-    variables: { slug: clipId },
-    extensions: {
-      persistedQuery: {
-        version: 1,
-        sha256Hash: '36b89d2507fce29e5ca551df756d27c1cfe079e2609642b4390aa4c35796eb11'
-      }
-    }
+    operationName: CLIP_TOKEN_OP,
+    variables: { slug: clipId, platform: 'web' },
+    extensions: { persistedQuery: { version: 1, sha256Hash: hash } }
   }, {
     headers: { 'Client-ID': GQL_CLIENT_ID, 'Content-Type': 'application/json' }
   })
-
+  const errors = res.data?.errors
+  if (errors?.[0]?.message === 'PersistedQueryNotFound') throw new Error('PersistedQueryNotFound')
   const clip = res.data?.data?.clip
   if (!clip) throw new Error('Clip not found')
+  return clip
+}
+
+export async function getClipVideoUrl(clipId) {
+  const hash = getSetting(CLIP_TOKEN_HASH_KEY) ?? CLIP_TOKEN_HASH_FALLBACK
+
+  let clip
+  try {
+    clip = await fetchClipToken(clipId, hash)
+  } catch (err) {
+    if (err.message !== 'PersistedQueryNotFound') throw err
+    // Hash is stale — scrape Twitch for the new one and retry
+    const newHash = await scrapeGQLHash(CLIP_TOKEN_OP)
+    setSetting(CLIP_TOKEN_HASH_KEY, newHash)
+    clip = await fetchClipToken(clipId, newHash)
+  }
 
   const token = clip.playbackAccessToken
   const quality = clip.videoQualities?.[0]
