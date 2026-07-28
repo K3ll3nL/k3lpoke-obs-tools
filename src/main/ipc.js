@@ -14,7 +14,8 @@ import {
   getClipsByStatus, getAllClips, getNewClips, setClipStatus, bulkSetStatus, removeClip, reorderQueue,
   upsertClip, batchUpsertClips, clipExists, getChannels, upsertChannel, removeChannel,
   scheduleClipDeletion, bulkScheduleClipDeletion, getScheduledForDeletion, getOverdueForDeletion,
-  updateChannelCursor, getSetting, setSetting, getAllSettings, setClipVolume, setClipTrim, setClipEnvelope, updateClipThumbnails,
+  updateChannelCursor, getSetting, setSetting, getAllSettings, setClipVolume, setClipTrim, setClipEnvelope,
+  setClipLoudness, setClipNormalized, updateClipThumbnails,
   getCollections, createCollection, updateCollection, deleteCollection,
   addClipToCollection, removeClipFromCollection, getCollectionClips, getCollectionMemberships,
   getPlaybackConfig, setPlaybackConfig, saveThumbnailCache,
@@ -200,6 +201,8 @@ export async function registerIpcHandlers(mainWindow) {
   handle('clips:setVolume', ({ id, volume }) => { setClipVolume(id, volume); broadcastVolumeChange(id, volume) })
   handle('clips:setTrim', ({ id, trimStart, trimEnd }) => { setClipTrim(id, trimStart, trimEnd); notifyQueueUpdated() })
   handle('clips:setEnvelope', ({ id, envelope }) => { setClipEnvelope(id, envelope); notifyQueueUpdated() })
+  handle('clips:setLoudness', ({ id, lufs }) => { const r = setClipLoudness(id, lufs); notifyQueueUpdated(); return r })
+  handle('clips:setNormalized', ({ id, enabled }) => { setClipNormalized(id, enabled); notifyQueueUpdated() })
   handle('clips:setStatus', ({ id, status }) => { setClipStatus(id, status); notifyQueueUpdated() })
   handle('clips:bulkSetStatus', ({ ids, status }) => { bulkSetStatus(ids, status); notifyQueueUpdated() })
   handle('clips:reorder', ({ ids }) => { reorderQueue(ids); notifyQueueUpdated() })

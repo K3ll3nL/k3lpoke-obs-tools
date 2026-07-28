@@ -29,6 +29,8 @@ contextBridge.exposeInMainWorld('api', {
     setVolume: (id, volume) => invoke('clips:setVolume', { id, volume }),
     setTrim: (id, trimStart, trimEnd) => invoke('clips:setTrim', { id, trimStart, trimEnd }),
     setEnvelope: (id, envelope) => invoke('clips:setEnvelope', { id, envelope }),
+    setLoudness: (id, lufs) => invoke('clips:setLoudness', { id, lufs }),
+    setNormalized: (id, enabled) => invoke('clips:setNormalized', { id, enabled }),
     getVideoUrl: (id) => invoke('clips:getVideoUrl', { id }),
     approve: (id) => invoke('clips:approve', { id }),
     deny: (id) => invoke('clips:deny', { id }),

@@ -461,6 +461,23 @@ const CLIP_TOKEN_OP = 'VideoAccessToken_Clip'
 const CLIP_TOKEN_HASH_KEY = 'gqlHash_VideoAccessToken_Clip'
 const CLIP_TOKEN_HASH_FALLBACK = '993d9a5131f15a37bd16f32342c44ed1e0b1a9b968c6afdb662d2cddd595f6c5'
 
+// Full query used when the persisted hash is stale — avoids depending on
+// Twitch's bundle format for hash scraping.
+const CLIP_TOKEN_QUERY = `query VideoAccessToken_Clip($slug: ID!) {
+  clip(slug: $slug) {
+    id
+    playbackAccessToken(params: {platform: "web", playerBackend: "mediaplayer", playerType: "site"}) {
+      signature
+      value
+    }
+    videoQualities {
+      frameRate
+      quality
+      sourceURL
+    }
+  }
+}`
+
 async function scrapeGQLHash(operationName) {
   const page = await axios.get('https://www.twitch.tv/', {
     headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36' },
@@ -477,16 +494,23 @@ async function scrapeGQLHash(operationName) {
   throw new Error(`Could not find GQL hash for ${operationName} — update manually`)
 }
 
+// When `hash` is provided, use the persisted-query path; otherwise send the
+// full query string directly (hash-independent fallback).
 async function fetchClipToken(clipId, hash) {
-  const res = await axios.post(TWITCH_GQL, {
-    operationName: CLIP_TOKEN_OP,
-    variables: { slug: clipId, platform: 'web' },
-    extensions: { persistedQuery: { version: 1, sha256Hash: hash } }
-  }, {
+  const body = hash
+    ? {
+        operationName: CLIP_TOKEN_OP,
+        variables: { slug: clipId, platform: 'web' },
+        extensions: { persistedQuery: { version: 1, sha256Hash: hash } }
+      }
+    : { operationName: CLIP_TOKEN_OP, query: CLIP_TOKEN_QUERY, variables: { slug: clipId } }
+
+  const res = await axios.post(TWITCH_GQL, body, {
     headers: { 'Client-ID': GQL_CLIENT_ID, 'Content-Type': 'application/json' }
   })
   const errors = res.data?.errors
   if (errors?.[0]?.message === 'PersistedQueryNotFound') throw new Error('PersistedQueryNotFound')
+  if (errors?.length) throw new Error(errors[0].message || 'GQL error')
   const clip = res.data?.data?.clip
   if (!clip) throw new Error('Clip not found')
   return clip
@@ -500,10 +524,15 @@ export async function getClipVideoUrl(clipId) {
     clip = await fetchClipToken(clipId, hash)
   } catch (err) {
     if (err.message !== 'PersistedQueryNotFound') throw err
-    // Hash is stale — scrape Twitch for the new one and retry
-    const newHash = await scrapeGQLHash(CLIP_TOKEN_OP)
-    setSetting(CLIP_TOKEN_HASH_KEY, newHash)
-    clip = await fetchClipToken(clipId, newHash)
+    // Hash is stale. Try to scrape a fresh one (keeps persisted-query fast
+    // path working); if scraping fails, fall back to the full query.
+    try {
+      const newHash = await scrapeGQLHash(CLIP_TOKEN_OP)
+      setSetting(CLIP_TOKEN_HASH_KEY, newHash)
+      clip = await fetchClipToken(clipId, newHash)
+    } catch {
+      clip = await fetchClipToken(clipId, null)
+    }
   }
 
   const token = clip.playbackAccessToken

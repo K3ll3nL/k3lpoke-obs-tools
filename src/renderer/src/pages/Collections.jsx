@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react'
 import { Plus, Trash2, Check, X, Layers, ChevronDown, GripVertical } from 'lucide-react'
-import { getEnvelopeVol } from '../components/WaveformEditor'
+import { useEnvelopeAudio } from '../hooks/useEnvelopeAudio'
 import { showUndo, showNotice } from '../lib/undoToast'
 
 const PRESET_COLORS = ['#9146ff', '#0984e3', '#00b894', '#e17055', '#fd79a8', '#fdcb6e']
@@ -34,19 +34,15 @@ function ClipCard({ clip, canRemove, onRemove, onDragStart, onDragEnd, collectio
     }
   }
 
+  // Envelope + normalize gain are driven through the shared audio hook.
+  useEnvelopeAudio(videoRef, { ...clip, volume }, clipEnvelope, expanded && !!videoUrl)
+
   useEffect(() => {
     const vid = videoRef.current
     if (!vid || !videoUrl) return
-    const onMeta = () => {
-      vid.currentTime = trimStart
-      vid.volume = Math.min(1, Math.max(0, volume))
-    }
+    const onMeta = () => { vid.currentTime = trimStart }
     const onTick = () => {
-      if (vid.currentTime >= trimEnd) { vid.pause(); return }
-      if (clipEnvelope.length > 0) {
-        const envVol = getEnvelopeVol(clipEnvelope, vid.currentTime)
-        vid.volume = Math.min(1, Math.max(0, volume * envVol))
-      }
+      if (vid.currentTime >= trimEnd) vid.pause()
     }
     vid.addEventListener('loadedmetadata', onMeta)
     vid.addEventListener('timeupdate', onTick)
@@ -57,7 +53,7 @@ function ClipCard({ clip, canRemove, onRemove, onDragStart, onDragEnd, collectio
       vid.pause()
       vid.currentTime = 0
     }
-  }, [videoUrl, trimStart, trimEnd, clipEnvelope, volume, expanded])
+  }, [videoUrl, trimStart, trimEnd, expanded])
 
   useEffect(() => {
     if (!expanded) {

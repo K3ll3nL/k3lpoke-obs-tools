@@ -97,6 +97,35 @@
     let colIndices   = {}
     let recentlyPlayed = new Map() // clipId -> timestamp
     let recentChannelHistory = []  // [{ch, time}] for distribution balance
+    // Persistent per-collection played-this-cycle sets. Survives reloads/restarts so
+    // "Show every clip before repeating" holds even when the source goes away.
+    let playedCycle = {} // { [collectionId]: Set<clipId> }
+    const PLAYED_CYCLE_KEY = 'twclip.playedCycle.v1'
+    const RECENT_PLAYED_KEY = 'twclip.recentlyPlayed.v1'
+    try {
+      const raw = localStorage.getItem(PLAYED_CYCLE_KEY)
+      if (raw) {
+        const obj = JSON.parse(raw)
+        for (const [k, arr] of Object.entries(obj)) playedCycle[k] = new Set(arr)
+      }
+    } catch {}
+    try {
+      const raw = localStorage.getItem(RECENT_PLAYED_KEY)
+      if (raw) {
+        const arr = JSON.parse(raw)
+        for (const [id, ts] of arr) recentlyPlayed.set(id, ts)
+      }
+    } catch {}
+    function savePlayedCycle() {
+      try {
+        const obj = {}
+        for (const [k, s] of Object.entries(playedCycle)) obj[k] = [...s]
+        localStorage.setItem(PLAYED_CYCLE_KEY, JSON.stringify(obj))
+      } catch {}
+    }
+    function saveRecentlyPlayed() {
+      try { localStorage.setItem(RECENT_PLAYED_KEY, JSON.stringify([...recentlyPlayed])) } catch {}
+    }
     let currentGame = null         // game the streamer is currently live with
     let currentStreamTitle = null  // stream title for Auto mode rule matching
     let playCfg      = { mode: 'single', activeCollectionId: 'main', weightedSets: [], collections: [] }
@@ -115,6 +144,14 @@
     function applyVolume(slotIdx, vol) {
       const v = Number(vol)
       slots[slotIdx].video.volume = Math.min(1, Math.max(0, isNaN(v) ? 1 : v))
+    }
+
+    // Base gain before the envelope — mirrors getBaseVolume() in
+    // src/renderer/src/lib/loudness.js so OBS matches the in-app player.
+    // Auto-normalize is baked into the envelope, so there is no extra factor.
+    // Note: no Web Audio here (see above), so a combined gain >1 clamps to 1.0.
+    function baseVolume(clip) {
+      return clip?.volume ?? 1
     }
 
     let config = {
@@ -268,14 +305,35 @@
         const data = await res.json()
         playCfg = data
         const prevIndices = { ...colIndices }
+        const prevQueues  = colQueues
         colQueues = {}
         colIndices = {}
-        recentlyPlayed = new Map()
-        recentChannelHistory = []
+        // Preserve recentlyPlayed / recentChannelHistory across reloads so the
+        // repeat guards survive queue/config updates.
         for (const col of (data.collections || [])) {
-          colQueues[col.id]  = biasedShuffle(col.clips || [])
+          const clips = col.clips || []
+          const prevQ = prevQueues[col.id]
+          if (prevQ && prevQ.length) {
+            // Stable merge: keep prior order for clips still present, then
+            // append newly-added clips. Reshuffling here would break the
+            // "play every clip before repeating" round-robin.
+            const byId = new Map(clips.map(c => [c.id, c]))
+            const kept = prevQ.filter(c => byId.has(c.id)).map(c => byId.get(c.id))
+            const keptIds = new Set(kept.map(c => c.id))
+            const added = biasedShuffle(clips.filter(c => !keptIds.has(c.id)))
+            colQueues[col.id] = [...kept, ...added]
+          } else {
+            colQueues[col.id] = biasedShuffle(clips)
+          }
           colIndices[col.id] = prevIndices[col.id] ?? 0
+          // Prune played-cycle entries for clips no longer in this collection.
+          const set = playedCycle[col.id]
+          if (set) {
+            const validIds = new Set(clips.map(c => c.id))
+            for (const id of set) if (!validIds.has(id)) set.delete(id)
+          }
         }
+        savePlayedCycle()
         activeCollectionId = null
       } catch {
         playCfg   = { mode: 'single', activeCollectionId: 'main', weightedSets: [], collections: [] }
@@ -442,38 +500,35 @@
         const available = q.filter(c => !recentlyPlayed.has(c.id))
         clip = weightedRandom(available.length ? available : q)
       } else {
-        const idx = colIndices[effectiveId] ?? 0
-        clip = q[idx % q.length]
-        colIndices[effectiveId] = idx + 1
-        if (recentlyPlayed.has(clip.id)) {
-          let searchIdx = idx + 1
-          let found = false
-          for (let i = 0; i < q.length - 1; i++) {
-            const candidate = q[searchIdx % q.length]
-            searchIdx++
-            if (!recentlyPlayed.has(candidate.id)) {
-              clip = candidate
-              colIndices[effectiveId] = searchIdx
-              found = true
-              break
-            }
-          }
-          if (!found) {
-            // All clips recently played — reset and use natural next
-            recentlyPlayed.clear()
-          }
+        // Hard round-robin: no clip repeats until every clip in this collection
+        // has played once. Set is persisted, so pauses/reloads don't reset it.
+        let played = playedCycle[effectiveId] ||= new Set()
+        let eligible = q.filter(c => !played.has(c.id))
+        if (!eligible.length) {
+          played.clear()
+          eligible = q
         }
+        clip = weightedRandom(eligible) || eligible[0]
       }
 
       // If no-consecutive-channel is on and this clip is from the same channel as what's playing, swap it out
       if (config.noConsecutiveChannel && activeClip?.broadcaster_name && clip?.broadcaster_name === activeClip.broadcaster_name) {
-        const fresh = q.filter(c => c.broadcaster_name !== activeClip.broadcaster_name && !recentlyPlayed.has(c.id))
+        const played = playedCycle[effectiveId]
+        const filterFn = config.playAllBeforeLoop
+          ? (c => c.broadcaster_name !== activeClip.broadcaster_name && !(played && played.has(c.id)))
+          : (c => c.broadcaster_name !== activeClip.broadcaster_name && !recentlyPlayed.has(c.id))
+        const fresh = q.filter(filterFn)
         const any   = q.filter(c => c.broadcaster_name !== activeClip.broadcaster_name)
         const alt   = weightedRandom(fresh.length ? fresh : (any.length ? any : null))
         if (alt) clip = alt
       }
 
+      if (config.playAllBeforeLoop) {
+        (playedCycle[effectiveId] ||= new Set()).add(clip.id)
+        savePlayedCycle()
+      }
       recentlyPlayed.set(clip.id, now)
+      saveRecentlyPlayed()
       const dur = Math.max(1, (clip.trimEnd ?? clip.duration ?? 60) - (clip.trimStart ?? 0))
       recentChannelHistory.push({ ch: clip.broadcaster_name || '', time: now, dur })
       if (recentChannelHistory.length > 200) recentChannelHistory.splice(0, 100)
@@ -608,7 +663,7 @@
         if (clip.trim_end != null && video.currentTime >= clip.trim_end) { done(); return }
         if (hasEnvelope) {
           const envVol = getEnvelopeVol(clip.envelope, video.currentTime)
-          video.volume = Math.min(1, Math.max(0, (clip.volume ?? 1) * envVol))
+          video.volume = Math.min(1, Math.max(0, baseVolume(clip) * envVol))
         }
       }
       video.addEventListener('ended', done, { once: true })
@@ -637,10 +692,10 @@
       prevSlot.video.pause()
 
       // trim_start was already set during preload — do not re-seek here (causes audio desync)
-      applyVolume(slotIdx, clip.volume)
+      applyVolume(slotIdx, baseVolume(clip))
       if (clip.envelope?.length > 0) {
         const envVol = getEnvelopeVol(clip.envelope, clip.trim_start ?? 0)
-        nextSlot.video.volume = Math.min(1, Math.max(0, (clip.volume ?? 1) * envVol))
+        nextSlot.video.volume = Math.min(1, Math.max(0, baseVolume(clip) * envVol))
       }
       nextSlot.video.play().catch(() => {})
 
@@ -676,10 +731,10 @@
             slot.video.currentTime = clip.trim_start
           })
         }
-        applyVolume(activeSlot, clip.volume)
+        applyVolume(activeSlot, baseVolume(clip))
         if (clip.envelope?.length > 0) {
           const envVol = getEnvelopeVol(clip.envelope, clip.trim_start ?? 0)
-          slot.video.volume = Math.min(1, Math.max(0, (clip.volume ?? 1) * envVol))
+          slot.video.volume = Math.min(1, Math.max(0, baseVolume(clip) * envVol))
         }
         await slot.video.play()
 

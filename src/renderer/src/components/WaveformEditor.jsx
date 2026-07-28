@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react'
+import { measureIntegratedLufs, buildNormalizeEnvelope, getBaseVolume, formatLufs, LUFS_TARGET } from '../lib/loudness'
 
 const CANVAS_H = 100
 const VOL_MAX = 2.0
@@ -33,9 +34,17 @@ export function getEnvelopeVol(envelope, time) {
   return a.volume + (b.volume - a.volume) * applyInterp(b.curve ?? 'linear', p)
 }
 
-export default function WaveformEditor({ clip, envelope: initEnvelope, onChange }) {
+export default function WaveformEditor({
+  clip,
+  envelope: initEnvelope,
+  onChange,
+  videoRef,
+  onLoudnessMeasured,
+  onNormalizedChange
+}) {
   const canvasRef = useRef(null)
   const draggingRef = useRef(null)
+  const bufferRef = useRef(null)
   const keyframesRef = useRef(initEnvelope ?? [])
 
   const [keyframes, _setKfs] = useState(() => initEnvelope ?? [])
@@ -44,8 +53,25 @@ export default function WaveformEditor({ clip, envelope: initEnvelope, onChange 
   const [canvasWidth, setCanvasWidth] = useState(0)
   const [loadingWave, setLoadingWave] = useState(false)
   const [waveError, setWaveError] = useState(null)
+  const [measuring, setMeasuring] = useState(false)
+  const [normalizing, setNormalizing] = useState(false)
+  const [playhead, setPlayhead] = useState(null)
 
   const dur = clip.duration ?? 60
+  const baseVolume = getBaseVolume(clip)
+
+  // Track the playhead so the drawn curve lines up with what's audible.
+  useEffect(() => {
+    const vid = videoRef?.current
+    if (!vid) return
+    let raf
+    const tick = () => {
+      setPlayhead(vid.paused && vid.currentTime === 0 ? null : vid.currentTime)
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [videoRef])
 
   function setKeyframes(v) {
     const next = typeof v === 'function' ? v(keyframesRef.current) : v
@@ -72,7 +98,7 @@ export default function WaveformEditor({ clip, envelope: initEnvelope, onChange 
     return null
   }
 
-  const draw = useCallback((kfs, sel, pks, w) => {
+  const draw = useCallback((kfs, sel, pks, w, base, head) => {
     const canvas = canvasRef.current
     if (!canvas) return
     const actualW = w > 0 ? w : Math.floor(canvas.getBoundingClientRect().width)
@@ -101,7 +127,30 @@ export default function WaveformEditor({ clip, envelope: initEnvelope, onChange 
     ctx.beginPath(); ctx.moveTo(0, refY); ctx.lineTo(w, refY); ctx.stroke()
     ctx.setLineDash([])
 
-    if (!kfs || kfs.length === 0) return
+    // Effective (audible) level = base gain x envelope. This is what the player
+    // actually plays, so drawing it removes the see/hear mismatch.
+    const yFor = v => PAD + (1 - Math.min(VOL_MAX, v) / VOL_MAX) * INNER_H
+    const drawPlayhead = () => {
+      if (head == null || dur <= 0) return
+      const hx = (head / dur) * w
+      ctx.strokeStyle = 'rgba(255,255,255,0.75)'
+      ctx.lineWidth = 1
+      ctx.beginPath(); ctx.moveTo(hx, 0); ctx.lineTo(hx, CANVAS_H); ctx.stroke()
+    }
+
+    ctx.strokeStyle = 'rgba(0,209,145,0.85)'
+    ctx.lineWidth = 1.5
+    ctx.beginPath()
+    const STEPS = Math.max(2, Math.floor(w))
+    for (let i = 0; i <= STEPS; i++) {
+      const t = (i / STEPS) * dur
+      const env = kfs && kfs.length ? getEnvelopeVol(kfs, t) : 1.0
+      const y = yFor(base * env)
+      i === 0 ? ctx.moveTo(0, y) : ctx.lineTo((i / STEPS) * w, y)
+    }
+    ctx.stroke()
+
+    if (!kfs || kfs.length === 0) { drawPlayhead(); return }
 
     const sorted = [...kfs].sort((a, b) => a.time - b.time)
 
@@ -147,11 +196,13 @@ export default function WaveformEditor({ clip, envelope: initEnvelope, onChange 
       ctx.lineWidth = 1.5
       ctx.stroke()
     })
+
+    drawPlayhead()
   }, [dur])
 
   useEffect(() => {
-    draw(keyframes, selected, peaks, canvasWidth)
-  }, [keyframes, selected, peaks, canvasWidth, draw])
+    draw(keyframes, selected, peaks, canvasWidth, baseVolume, playhead)
+  }, [keyframes, selected, peaks, canvasWidth, draw, baseVolume, playhead])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -230,35 +281,86 @@ export default function WaveformEditor({ clip, envelope: initEnvelope, onChange 
     })
   }
 
-  async function loadWaveform() {
+  // Decoding is the expensive part, so it's done once and reused for peaks,
+  // the native loudness readout, and building the normalize envelope.
+  async function decodeAudio() {
+    if (bufferRef.current) return bufferRef.current
+    const r = await window.api.clips.getVideoUrl(clip.id)
+    if (!r.ok) throw new Error(r.error || 'no url')
+    const resp = await fetch(r.data)
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+    const buf = await resp.arrayBuffer()
+    const actx = new AudioContext()
+    const audio = await actx.decodeAudioData(buf)
+    actx.close()
+    bufferRef.current = audio
+    return audio
+  }
+
+  async function analyzeAudio() {
     setLoadingWave(true)
+    setMeasuring(true)
     setWaveError(null)
     try {
-      const r = await window.api.clips.getVideoUrl(clip.id)
-      if (!r.ok) throw new Error(r.error || 'no url')
-      const resp = await fetch(r.data)
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-      const buf = await resp.arrayBuffer()
-      const actx = new AudioContext()
-      const audio = await actx.decodeAudioData(buf)
-      actx.close()
+      const audio = await decodeAudio()
+
       const ch = audio.getChannelData(0)
       const BUCKETS = 500
       const step = Math.floor(ch.length / BUCKETS)
-      const p = Array.from({ length: BUCKETS }, (_, i) => {
+      setPeaks(Array.from({ length: BUCKETS }, (_, i) => {
         let max = 0
         for (let j = 0; j < step; j++) {
           const v = Math.abs(ch[i * step + j] || 0)
           if (v > max) max = v
         }
         return max
-      })
-      setPeaks(p)
+      }))
+
+      const lufs = measureIntegratedLufs(audio)
+      await window.api.clips.setLoudness(clip.id, lufs)
+      onLoudnessMeasured?.(lufs)
+      return audio
     } catch {
       setWaveError('Could not load audio')
+      return null
     } finally {
       setLoadingWave(false)
+      setMeasuring(false)
     }
+  }
+
+  // Measure native loudness once per clip so the user always sees it.
+  useEffect(() => {
+    bufferRef.current = null
+    if (clip.loudness_lufs == null) analyzeAudio()
+  }, [clip.id])
+
+  // Auto-normalize writes the correction into the envelope itself, so the level
+  // is held near the target across the whole clip rather than shifted by one
+  // flat gain. The generated curve stays fully editable.
+  async function applyAutoNormalize() {
+    setNormalizing(true)
+    try {
+      const audio = bufferRef.current ?? (await analyzeAudio())
+      if (!audio) return
+      const kfs = buildNormalizeEnvelope(audio, { target: LUFS_TARGET })
+      if (!kfs) { setWaveError('Clip is too quiet or too short to normalize'); return }
+      setKeyframes(kfs)
+      _setSel(null)
+      onChange?.(kfs)
+      await window.api.clips.setNormalized(clip.id, true)
+      onNormalizedChange?.(true)
+    } finally {
+      setNormalizing(false)
+    }
+  }
+
+  async function clearEnvelope() {
+    setKeyframes([])
+    _setSel(null)
+    onChange?.([])
+    await window.api.clips.setNormalized(clip.id, false)
+    onNormalizedChange?.(false)
   }
 
   const selectedKf = keyframes.find(kf => kf.id === selected)
@@ -270,11 +372,44 @@ export default function WaveformEditor({ clip, envelope: initEnvelope, onChange 
         <div className="flex items-center gap-3">
           {waveError && <span className="text-[10px] text-red-400">{waveError}</span>}
           <button
-            onClick={loadWaveform}
+            onClick={analyzeAudio}
             disabled={loadingWave}
             className="text-[10px] text-twitch-purple hover:text-white transition-colors disabled:opacity-40"
           >
-            {loadingWave ? 'Loading…' : peaks ? 'Reload Waveform' : 'Load Waveform'}
+            {loadingWave ? 'Analyzing…' : peaks ? 'Reload Waveform' : 'Load Waveform'}
+          </button>
+        </div>
+      </div>
+
+      {/* Native loudness — always visible, never hidden behind a toggle. */}
+      <div className="flex items-center justify-between rounded border border-twitch-border bg-twitch-dark px-3 py-2 gap-3">
+        <div className="min-w-0">
+          <p className="text-[10px] text-twitch-muted uppercase tracking-wide">Native Volume</p>
+          <p className="text-sm text-twitch-text tabular-nums">
+            {measuring ? 'Measuring…' : formatLufs(clip.loudness_lufs)}
+            {clip.loudness_lufs != null && !measuring && (
+              <span className="text-[10px] text-twitch-muted ml-2">
+                target {LUFS_TARGET} LUFS
+                {clip.normalized && <span className="text-[#00d191] ml-1.5">· normalized</span>}
+              </span>
+            )}
+          </p>
+        </div>
+        <div className="flex items-center gap-1.5 shrink-0">
+          {keyframes.length > 0 && (
+            <button
+              onClick={clearEnvelope}
+              className="px-2.5 py-1 text-xs rounded border border-twitch-border text-twitch-muted hover:text-twitch-text transition-colors"
+            >
+              Clear
+            </button>
+          )}
+          <button
+            onClick={applyAutoNormalize}
+            disabled={measuring || normalizing}
+            className="px-2.5 py-1 text-xs rounded border border-twitch-purple bg-twitch-purple text-white transition-colors disabled:opacity-40"
+          >
+            {normalizing ? 'Normalizing…' : 'Auto-Normalize'}
           </button>
         </div>
       </div>
@@ -292,9 +427,13 @@ export default function WaveformEditor({ clip, envelope: initEnvelope, onChange 
         />
       </div>
 
-      <p className="text-[10px] text-twitch-muted">
-        Click to add point · Drag to move · Right-click to remove
-      </p>
+      <div className="flex items-center justify-between text-[10px] text-twitch-muted">
+        <span>Click to add point · Drag to move · Right-click to remove</span>
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block w-2 h-0.5 bg-[#9146FF]" /> envelope
+          <span className="inline-block w-2 h-0.5 bg-[#00d191] ml-1.5" /> audible
+        </span>
+      </div>
 
       {selectedKf && (
         <div className="rounded border border-twitch-border bg-twitch-dark px-3 py-2.5 space-y-2">

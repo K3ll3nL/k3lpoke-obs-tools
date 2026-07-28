@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { RefreshCw, CheckCheck, XSquare, Check, X, ChevronDown, Eye, Tag } from 'lucide-react'
 import WaveformEditor from '../components/WaveformEditor'
+import { useEnvelopeAudio } from '../hooks/useEnvelopeAudio'
 import TrimBar from '../components/TrimBar'
 import CollectionPicker from '../components/CollectionPicker'
 import ControlToggleButtons from '../components/ControlToggleButtons'
@@ -36,6 +37,9 @@ const ClipRow = React.memo(function ClipRow({ clip, onStatusChange, collections,
   async function saveVolume(val) {
     await window.api.clips.setVolume(clip.id, val)
   }
+
+  // Previously played at raw 100% — volume and envelope were never applied here.
+  useEnvelopeAudio(videoRef, { ...clip, volume }, clipEnvelope, expanded && !!videoUrl)
 
   useEffect(() => {
     const vid = videoRef.current
@@ -197,8 +201,9 @@ const ClipRow = React.memo(function ClipRow({ clip, onStatusChange, collections,
             )}
             {showWaveform && (
               <WaveformEditor
-                clip={clip}
+                clip={{ ...clip, volume }}
                 envelope={clipEnvelope}
+                videoRef={videoRef}
                 onChange={env => {
                   setClipEnvelope(env)
                   window.api.clips.setEnvelope(clip.id, env)

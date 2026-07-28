@@ -1,7 +1,8 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react'
 import { Check, X, ChevronDown, Search, Tag, Trash2, Clock } from 'lucide-react'
 import { Link } from 'react-router-dom'
-import WaveformEditor, { getEnvelopeVol } from '../components/WaveformEditor'
+import WaveformEditor from '../components/WaveformEditor'
+import { useEnvelopeAudio } from '../hooks/useEnvelopeAudio'
 import TrimBar from '../components/TrimBar'
 import CollectionPicker from '../components/CollectionPicker'
 import ControlToggleButtons from '../components/ControlToggleButtons'
@@ -58,16 +59,31 @@ const ClipRow = React.memo(function ClipRow({ clip, onStatusChange, onRemove, on
     await window.api.clips.setTrim(clip.id, start > 0 ? start : null, end < dur ? end : null)
   }
 
+  // Local mirror of the clip's audio fields so measuring/normalizing updates
+  // the player and editor immediately, without waiting for a queue refresh.
+  const [audio, setAudio] = useState({
+    loudness_lufs: clip.loudness_lufs ?? null,
+    normalized: clip.normalized ?? false
+  })
+  useEffect(() => {
+    setAudio({
+      loudness_lufs: clip.loudness_lufs ?? null,
+      normalized: clip.normalized ?? false
+    })
+  }, [clip.id, clip.loudness_lufs, clip.normalized])
+
+  const audioClip = { ...clip, ...audio, volume }
+
+  // Single source of truth for what's audible: base gain x envelope, sampled on
+  // rAF through a GainNode (see useEnvelopeAudio).
+  const liveVolume = useEnvelopeAudio(videoRef, audioClip, clipEnvelope, expanded && !!videoUrl)
+
   useEffect(() => {
     const vid = videoRef.current
     if (!vid || !videoUrl) return
     const onMeta = () => { vid.currentTime = trimStart }
     const onTick = () => {
-      if (vid.currentTime >= trimEnd) { vid.pause(); return }
-      if (clipEnvelope.length > 0) {
-        const envVol = getEnvelopeVol(clipEnvelope, vid.currentTime)
-        vid.volume = Math.min(1, Math.max(0, volume * envVol))
-      }
+      if (vid.currentTime >= trimEnd) vid.pause()
     }
     vid.addEventListener('loadedmetadata', onMeta)
     vid.addEventListener('timeupdate', onTick)
@@ -78,7 +94,7 @@ const ClipRow = React.memo(function ClipRow({ clip, onStatusChange, onRemove, on
       vid.pause()
       vid.currentTime = 0
     }
-  }, [videoUrl, trimStart, trimEnd, clipEnvelope, volume, expanded])
+  }, [videoUrl, trimStart, trimEnd, expanded])
 
   useEffect(() => {
     if (!expanded) {
@@ -283,19 +299,31 @@ const ClipRow = React.memo(function ClipRow({ clip, onStatusChange, onRemove, on
               onWaveformToggle={() => setShowWaveform(v => !v)}
             />
             {showVolume && (
-              <VolumeSlider
-                volume={volume}
-                onChange={setVolume}
-                onSave={saveVolume}
-              />
+              <>
+                <VolumeSlider
+                  volume={volume}
+                  onChange={setVolume}
+                  onSave={saveVolume}
+                />
+                <p className="text-[10px] text-twitch-muted tabular-nums">
+                  Now playing at {Math.round(liveVolume * 100)}%
+                  {audio.normalized && <span className="ml-1 text-[#00d191]">· normalized</span>}
+                </p>
+              </>
             )}
             {showTrim && (
               <TrimBar duration={clip.duration} trimStart={trimStart} trimEnd={trimEnd}
                 onChange={(s, e) => { setTrimStart(s); setTrimEnd(e) }} onSave={saveTrim} videoRef={videoRef} />
             )}
             {showWaveform && (
-              <WaveformEditor clip={clip} envelope={clipEnvelope}
-                onChange={env => { setClipEnvelope(env); window.api.clips.setEnvelope(clip.id, env) }} />
+              <WaveformEditor
+                clip={audioClip}
+                envelope={clipEnvelope}
+                videoRef={videoRef}
+                onChange={env => { setClipEnvelope(env); window.api.clips.setEnvelope(clip.id, env) }}
+                onLoudnessMeasured={lufs => setAudio(a => ({ ...a, loudness_lufs: lufs }))}
+                onNormalizedChange={v => setAudio(a => ({ ...a, normalized: v }))}
+              />
             )}
             {isOwnChannel && (
               <div className="pt-1 border-t border-twitch-border space-y-1.5">
