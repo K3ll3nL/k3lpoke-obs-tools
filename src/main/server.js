@@ -8,7 +8,7 @@ import { fileURLToPath } from 'url'
 import { app as electronApp, BrowserWindow } from 'electron'
 import { getClipVideoUrl, receiveAuthToken, fetchCurrentStream, getTwitchState } from './twitch.js'
 import { removeClips, getClipsByStatus, getClipById, getSetting, getCollections, getPlaybackConfig, getShinyLayoutForScene, getShinyDevices, resolveDeviceShinyScene } from './db.js'
-import { showDeviceInScene } from './obs.js'
+import { showDeviceInScene, setOverlayGain } from './obs.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -208,6 +208,11 @@ wss.on('connection', (ws, req) => {
         nextClipState = null
         if (mainWindowRef) mainWindowRef.webContents.send('player:now-playing', clip)
         if (mainWindowRef) mainWindowRef.webContents.send('player:next-clip', null)
+      }
+      // Overlay needs boost above what <video>.volume allows — apply it in OBS, then ack.
+      if (msg.type === 'set-gain') {
+        setOverlayGain(Number(msg.db) || 0)
+          .then(applied => ws.readyState === 1 && ws.send(JSON.stringify({ type: 'gain-applied', reqId: msg.reqId, applied })))
       }
       if (msg.type === 'next-preloaded') {
         nextClipState = msg.clip ?? null

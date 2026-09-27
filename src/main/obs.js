@@ -203,6 +203,86 @@ export async function showDeviceInScene({ universalScene, targetSourceName, allD
   }
 }
 
+// ── Overlay gain ─────────────────────────────────────────────────────────────
+// A <video> can't play above volume 1.0, and the overlay can't use Web Audio
+// (breaks reroute_audio). So any boost a clip needs is applied by a Gain filter
+// on the overlay's browser source, followed by a Limiter so boosted peaks don't clip.
+// We use filters rather than SetInputVolume so the user's mixer fader stays theirs.
+
+const GAIN_FILTER = 'Clip Normalize Gain'
+const LIMITER_FILTER = 'Clip Normalize Limiter'
+export const MAX_BOOST_DB = 12
+const OVERLAY_URL_RE = /:1102\/overlay\//
+const SOURCE_CACHE_MS = 30000
+
+let overlaySourceCache = { names: [], at: 0 }
+const filtersReady = new Set()
+const lastGainDb = new Map()
+
+obs.on('ConnectionClosed', () => {
+  overlaySourceCache = { names: [], at: 0 }
+  filtersReady.clear()
+  lastGainDb.clear()
+})
+
+// Browser sources pointing at our overlay, whatever the user named them.
+async function findOverlaySources() {
+  if (overlaySourceCache.names.length && Date.now() - overlaySourceCache.at < SOURCE_CACHE_MS) return overlaySourceCache.names
+  const { inputs } = await obs.call('GetInputList', { inputKind: 'browser_source' })
+  const names = []
+  for (const i of inputs) {
+    try {
+      const { inputSettings } = await obs.call('GetInputSettings', { inputName: i.inputName })
+      if (OVERLAY_URL_RE.test(inputSettings?.url ?? '')) names.push(i.inputName)
+    } catch {}
+  }
+  overlaySourceCache = { names, at: Date.now() }
+  return names
+}
+
+async function ensureGainFilters(sourceName) {
+  if (filtersReady.has(sourceName)) return
+  const { filters } = await obs.call('GetSourceFilterList', { sourceName })
+  const has = n => filters.some(f => f.filterName === n)
+  // Gain must come before the limiter; both append to the end of the chain.
+  if (!has(GAIN_FILTER)) {
+    await obs.call('CreateSourceFilter', { sourceName, filterName: GAIN_FILTER, filterKind: 'gain_filter', filterSettings: { db: 0 } })
+  }
+  if (!has(LIMITER_FILTER)) {
+    await obs.call('CreateSourceFilter', { sourceName, filterName: LIMITER_FILTER, filterKind: 'limiter_filter', filterSettings: { threshold: -1, release_time: 60 } })
+  }
+  filtersReady.add(sourceName)
+  lastGainDb.delete(sourceName)
+}
+
+/**
+ * Sets the boost gain (dB, clamped 0..MAX_BOOST_DB) on every overlay browser source.
+ * Returns true only when at least one source was updated — the overlay treats
+ * false as "no boost available" and falls back to capping at 1.0.
+ */
+export async function setOverlayGain(db) {
+  if (!connected) return false
+  const target = Math.round(Math.max(0, Math.min(MAX_BOOST_DB, db)) * 10) / 10
+  let applied = false
+  try {
+    for (const sourceName of await findOverlaySources()) {
+      try {
+        await ensureGainFilters(sourceName)
+        if (lastGainDb.get(sourceName) !== target) {
+          await obs.call('SetSourceFilterSettings', { sourceName, filterName: GAIN_FILTER, filterSettings: { db: target } })
+          lastGainDb.set(sourceName, target)
+        }
+        applied = true
+      } catch {
+        // Filter removed by the user or source renamed — rebuild next time.
+        filtersReady.delete(sourceName)
+        overlaySourceCache.at = 0
+      }
+    }
+  } catch {}
+  return applied
+}
+
 export async function checkBrowserSource(inputName) {
   if (!connected) return { exists: false }
   try {

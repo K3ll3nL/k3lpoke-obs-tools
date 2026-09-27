@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { getEnvelopeVol } from '../components/WaveformEditor'
-import { getBaseVolume } from '../lib/loudness'
+import { getBaseVolume, MAX_BOOST } from '../lib/loudness'
 
 /**
  * Drives an in-app <video> so its audible level always matches the envelope.
@@ -53,7 +53,7 @@ export function useEnvelopeAudio(videoRef, clip, envelope, active = true) {
       const { clip: c, envelope: env } = stateRef.current
       const base = getBaseVolume(c)
       const envVol = env && env.length ? getEnvelopeVol(env, vid.currentTime) : 1.0
-      const eff = Math.max(0, base * envVol)
+      const eff = Math.max(0, Math.min(MAX_BOOST, base * envVol))
 
       if (gainRef.current && ctxRef.current) {
         if (ctxRef.current.state === 'suspended') ctxRef.current.resume().catch(() => {})

@@ -2,11 +2,17 @@ import React, { useEffect, useRef, useState, useCallback } from 'react'
 import { measureIntegratedLufs, buildNormalizeEnvelope, getBaseVolume, formatLufs, LUFS_TARGET } from '../lib/loudness'
 
 const CANVAS_H = 100
-const VOL_MAX = 2.0
+const VOL_MAX = 4.0             // +12dB; boost above 100% is applied by OBS (see obs.js setOverlayGain)
 const HANDLE_R = 6
 const HIT_DIST = 12
 const PAD = HANDLE_R + 2        // keeps handles fully inside canvas at vol=0 and vol=MAX
 const INNER_H = CANVAS_H - 2 * PAD
+
+// Square-root vertical scale: 100% sits at mid-height, so the 0–100% range
+// stays roomy while the 100–400% boost range still fits above it.
+const volToFrac = v => Math.sqrt(Math.max(0, Math.min(VOL_MAX, v)) / VOL_MAX)
+const fracToVol = f => Math.max(0, Math.min(1, f)) ** 2 * VOL_MAX
+const volToY = v => PAD + (1 - volToFrac(v)) * INNER_H
 
 function fmtTime(secs) {
   const m = Math.floor(secs / 60)
@@ -80,13 +86,13 @@ export default function WaveformEditor({
   }
 
   function toXY(time, volume, w) {
-    return { x: (time / dur) * w, y: PAD + (1 - volume / VOL_MAX) * INNER_H }
+    return { x: (time / dur) * w, y: volToY(volume) }
   }
 
   function fromXY(x, y, w) {
     return {
-      time:   Math.max(0, Math.min(dur,     (x / w) * dur)),
-      volume: Math.max(0, Math.min(VOL_MAX, (1 - (y - PAD) / INNER_H) * VOL_MAX))
+      time:   Math.max(0, Math.min(dur, (x / w) * dur)),
+      volume: fracToVol(1 - (y - PAD) / INNER_H)
     }
   }
 
@@ -119,8 +125,12 @@ export default function WaveformEditor({
       })
     }
 
+    // Boost zone (>100%) is tinted green — that gain comes from OBS, not the video element.
+    const refY = volToY(1.0)
+    ctx.fillStyle = 'rgba(0,209,145,0.06)'
+    ctx.fillRect(0, 0, w, refY)
+
     // 100% reference line
-    const refY = PAD + (1 - 1.0 / VOL_MAX) * INNER_H
     ctx.strokeStyle = 'rgba(255,255,255,0.1)'
     ctx.setLineDash([4, 4])
     ctx.lineWidth = 1
@@ -129,7 +139,7 @@ export default function WaveformEditor({
 
     // Effective (audible) level = base gain x envelope. This is what the player
     // actually plays, so drawing it removes the see/hear mismatch.
-    const yFor = v => PAD + (1 - Math.min(VOL_MAX, v) / VOL_MAX) * INNER_H
+    const yFor = volToY
     const drawPlayhead = () => {
       if (head == null || dur <= 0) return
       const hx = (head / dur) * w

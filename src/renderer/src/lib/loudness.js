@@ -208,7 +208,7 @@ export function buildNormalizeEnvelope(audioBuffer, {
   const kfs = kept.map((k, i) => ({
     id: `norm-${i}-${Math.random().toString(36).slice(2, 8)}`,
     time: Math.max(0, Math.min(duration, k.time)),
-    volume: Math.max(0, Math.min(2, fromDb(k.db))),
+    volume: Math.max(0, Math.min(maxGain, fromDb(k.db))),
     mode: 'smooth',
     curve: 'linear'
   }))
@@ -223,6 +223,10 @@ export function buildNormalizeEnvelope(audioBuffer, {
 export function getBaseVolume(clip) {
   return clip?.volume ?? 1.0
 }
+
+// Ceiling on effective gain (+12dB). The OBS overlay can only reach >1.0 via
+// the gain filter obs.js drives (MAX_BOOST_DB there), so the in-app player caps here too.
+export const MAX_BOOST = 4.0
 
 export function formatLufs(lufs) {
   return lufs == null || !isFinite(lufs) ? '—' : `${lufs.toFixed(1)} LUFS`

@@ -149,9 +149,39 @@
     // Base gain before the envelope — mirrors getBaseVolume() in
     // src/renderer/src/lib/loudness.js so OBS matches the in-app player.
     // Auto-normalize is baked into the envelope, so there is no extra factor.
-    // Note: no Web Audio here (see above), so a combined gain >1 clamps to 1.0.
     function baseVolume(clip) {
       return clip?.volume ?? 1
+    }
+
+    // Boost above 1.0: <video>.volume caps at 1, so the app sets a Gain filter on
+    // this browser source (obs.js setOverlayGain) to the clip's peak, and the
+    // element plays level ÷ boost. The product is the exact drawn level.
+    const MAX_BOOST = 4   // +12dB — keep in sync with loudness.js MAX_BOOST
+    const slotBoost = [1, 1]
+    function peakGain(clip) {
+      const env = clip?.envelope
+      const envMax = env?.length ? Math.max(...env.map(k => k.volume ?? 1)) : 1
+      return Math.min(MAX_BOOST, baseVolume(clip) * envMax)
+    }
+
+    let gainReqId = 0
+    const gainWaiters = new Map()
+    // Resolves to the boost actually in effect (1 when OBS isn't reachable).
+    function requestBoost(clip) {
+      const want = Math.max(1, peakGain(clip))
+      if (!wsRef || wsRef.readyState !== 1) return Promise.resolve(1)
+      const reqId = ++gainReqId
+      wsRef.send(JSON.stringify({ type: 'set-gain', reqId, db: 20 * Math.log10(want) }))
+      return new Promise(resolve => {
+        const t = setTimeout(() => { gainWaiters.delete(reqId); resolve(1) }, 500)
+        gainWaiters.set(reqId, applied => { clearTimeout(t); resolve(applied ? want : 1) })
+      })
+    }
+
+    function setClipVolume(slotIdx, clip, time) {
+      const envVol = clip.envelope?.length ? getEnvelopeVol(clip.envelope, time) : 1
+      const level = Math.min(MAX_BOOST, baseVolume(clip) * envVol)
+      applyVolume(slotIdx, level / slotBoost[slotIdx])
     }
 
     let config = {
@@ -661,10 +691,7 @@
       }
       function onTick() {
         if (clip.trim_end != null && video.currentTime >= clip.trim_end) { done(); return }
-        if (hasEnvelope) {
-          const envVol = getEnvelopeVol(clip.envelope, video.currentTime)
-          video.volume = Math.min(1, Math.max(0, baseVolume(clip) * envVol))
-        }
+        if (hasEnvelope) setClipVolume(slots.findIndex(s => s.video === video), clip, video.currentTime)
       }
       video.addEventListener('ended', done, { once: true })
       video.addEventListener('error', done, { once: true })
@@ -691,12 +718,10 @@
       prevSlot.wrap.classList.remove('active')
       prevSlot.video.pause()
 
+      // Outgoing clip is paused, so it's safe to retune the OBS gain for this one.
+      slotBoost[slotIdx] = await requestBoost(clip)
       // trim_start was already set during preload — do not re-seek here (causes audio desync)
-      applyVolume(slotIdx, baseVolume(clip))
-      if (clip.envelope?.length > 0) {
-        const envVol = getEnvelopeVol(clip.envelope, clip.trim_start ?? 0)
-        nextSlot.video.volume = Math.min(1, Math.max(0, baseVolume(clip) * envVol))
-      }
+      setClipVolume(slotIdx, clip, clip.trim_start ?? 0)
       nextSlot.video.play().catch(() => {})
 
       activeClip = clip
@@ -731,11 +756,8 @@
             slot.video.currentTime = clip.trim_start
           })
         }
-        applyVolume(activeSlot, baseVolume(clip))
-        if (clip.envelope?.length > 0) {
-          const envVol = getEnvelopeVol(clip.envelope, clip.trim_start ?? 0)
-          slot.video.volume = Math.min(1, Math.max(0, baseVolume(clip) * envVol))
-        }
+        slotBoost[activeSlot] = await requestBoost(clip)
+        setClipVolume(activeSlot, clip, clip.trim_start ?? 0)
         await slot.video.play()
 
         activeClip = clip
@@ -776,8 +798,18 @@
             colQueues = {}; colIndices = {}; nextPreload = null; activeCollectionId = null
             slots.forEach(s => { s.video.pause(); s.video.src = '' })
           }
-          if (msg.type === 'volume-update' && msg.clipId === activeClipId) {
-            applyVolume(activeSlot, msg.volume)
+          if (msg.type === 'volume-update' && msg.clipId === activeClipId && activeClip) {
+            activeClip.volume = msg.volume
+            const slotIdx = activeSlot, clip = activeClip
+            requestBoost(clip).then(b => {
+              if (activeClip !== clip) return
+              slotBoost[slotIdx] = b
+              setClipVolume(slotIdx, clip, slots[slotIdx].video.currentTime)
+            })
+          }
+          if (msg.type === 'gain-applied') {
+            gainWaiters.get(msg.reqId)?.(msg.applied)
+            gainWaiters.delete(msg.reqId)
           }
           if (msg.type === 'skip-next') {
             nextPreload = null
