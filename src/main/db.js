@@ -270,6 +270,19 @@ export function removeClip(id) {
   save()
 }
 
+export function getAllClipIds() {
+  return data.clips.map(c => c.id)
+}
+
+export function removeClips(ids) {
+  const drop = new Set(ids)
+  data.clips = data.clips.filter(c => !drop.has(c.id))
+  for (const col of data.collections) {
+    col.clipIds = col.clipIds.filter(cid => !drop.has(cid))
+  }
+  save()
+}
+
 export function reorderQueue(orderedIds) {
   orderedIds.forEach((id, i) => {
     const clip = data.clips.find(c => c.id === id)
@@ -564,6 +577,9 @@ function _migrateActivation(act) {
   return { ...DEFAULT_ACTIVATION(), ...act, conditions: conds }
 }
 
+let _chatTriggersVersion = 0
+export function getChatTriggersVersion() { return _chatTriggersVersion }
+
 export function getChatTriggers() {
   for (const t of data.chatTriggers) {
     t.activation = _migrateActivation(t.activation)
@@ -576,6 +592,7 @@ export function createChatTrigger(trigger) {
   const now = new Date().toISOString()
   const t = { id, enabled: true, createdAt: now, activation: DEFAULT_ACTIVATION(), ...trigger }
   data.chatTriggers.push(t)
+  _chatTriggersVersion++
   save()
   return t
 }
@@ -584,12 +601,14 @@ export function updateChatTrigger(id, changes) {
   const t = data.chatTriggers.find(t => t.id === id)
   if (!t) return null
   Object.assign(t, changes)
+  _chatTriggersVersion++
   save()
   return { ...t }
 }
 
 export function deleteChatTrigger(id) {
   data.chatTriggers = data.chatTriggers.filter(t => t.id !== id)
+  _chatTriggersVersion++
   save()
 }
 

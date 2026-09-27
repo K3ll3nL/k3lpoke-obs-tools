@@ -1,12 +1,14 @@
 import WebSocket from 'ws'
 import fs from 'fs'
 import { createEventSubSubscription } from './twitch.js'
+import { compilePattern, execCompiled, buildTriggerIndex, candidateTriggers } from './triggerClassifier.js'
 
 // ── IRC connection ─────────────────────────────────────────────────────────
 
 let _ws = null
 let _connected = false
 let _channel = null
+let _channelDisplay = null
 let _username = null
 let _token = null
 let _reconnectTimer = null
@@ -40,14 +42,16 @@ export function setEngineWindow(win) { _mainWindow = win }
 export function getChatEngineStatus() { return { connected: _connected, channel: _channel } }
 export function setEngineOpts(opts) { _engineOpts = opts }
 
-export function startChatEngine(username, token, channelName, broadcasterId, botBroadcasterId, botToken) {
+export function startChatEngine(username, token, channelName, broadcasterId, botBroadcasterId, botToken, channelDisplayName) {
   _username = username?.toLowerCase()
   _token = token
   _channel = channelName?.toLowerCase()
+  _channelDisplay = channelDisplayName || channelName || null
   _broadcasterId = broadcasterId ?? null
   _botBroadcasterId = botBroadcasterId ?? null
   _botToken = botToken ?? null
   stopChatEngine()
+  _firstWordsSeen.clear()
   _connect()
   _connectEventSub()
 }
@@ -129,7 +133,7 @@ function _parseLine(line) {
     const msg = {
       channel: msgChannel,
       username: username.toLowerCase(),
-      displayName: tags['display-name'] ?? username,
+      displayName: tags['display-name'] || username,
       userId: tags['user-id'] ?? '',
       text,
       badges,
@@ -219,6 +223,7 @@ async function _handleRedemption(event) {
         redeem_cost: String(redemption.rewardCost),
       },
     }
+    applyVarModifiersFromConsiderations(trigger.considerations, ctx.params)
 
     const response = trigger.responses?.[0]
     if (!response) continue
@@ -251,6 +256,8 @@ async function _handleRedemption(event) {
 }
 
 // ── Pattern parsing and matching ──────────────────────────────────────────
+
+export function parsePattern(pattern) { return _parsePattern(pattern) }
 
 function _parsePattern(pattern) {
   if (!pattern) return []
@@ -504,6 +511,9 @@ export async function dryRunTrigger(trigger, text, username = 'testuser') {
       case 'transform_variable':
         note = `variable transform on "${c.source}"`
         break
+      case 'random_variable':
+        note = `random pick into "${c.name}"`
+        break
     }
     if (!pass && c.type !== 'chance' && c.type !== 'chat_activity' && c.type !== 'obs_source') considerationsPass = false
     considerationResults.push({ type: c.type, pass, note })
@@ -581,13 +591,33 @@ export function matchTrigger(trigger, msg) {
         if (isNaN(Number(val))) return null
         val = val
       }
+      if (p.paramType === 'user') val = val.replace(/^@/, '')
       params[p.name] = val
     }
     return { params }
   }
 
+  if (trigger.type === 'first_words') {
+    if ((trigger.firstWordsMode ?? 'first_message') === 'first_message') {
+      let seen = _firstWordsSeen.get(trigger.id)
+      if (!seen) { seen = new Set(); _firstWordsSeen.set(trigger.id, seen) }
+      if (seen.has(msg.username)) return null
+      seen.add(msg.username)
+      return { params: {} }
+    }
+    const words = normalizeText(trigger.firstWordsText ?? '', false, trigger.firstWordsIgnorePunct)
+    if (!words) return null
+    const text = normalizeText(msg.text ?? '', false, trigger.firstWordsIgnorePunct)
+    return text.startsWith(words) ? { params: {} } : null
+  }
+
   // New pattern-based conditions
   if (trigger.pattern) {
+    const compiled = compilePattern(trigger.pattern)
+    if (compiled) {
+      const params = execCompiled(compiled, msg.text.trim().replace(/ /g, ' '))
+      return params ? { params } : null
+    }
     const result = _matchPattern(trigger.pattern, msg.text)
     return result ? { params: result.params ?? {} } : null
   }
@@ -709,6 +739,29 @@ function _checkUserLevel(msg, level) {
 
 // ── Template rendering ─────────────────────────────────────────────────────
 
+// Own channel renders with its Twitch capitalization; other values pass through
+function channelDisplay(c) { return c && c === _channel ? (_channelDisplay ?? c) : (c ?? '') }
+
+const USER_PROP_RE = /^(\w+)\.(name|game|link|followage)$/
+
+// Looks up Twitch data for every @{param.prop} used in the templates (link needs no lookup).
+async function resolveUserProps(templates, params, { fetchUserByLogin, fetchChannelInfo, fetchFollowage, mainUser }) {
+  const wanted = {}
+  for (const m of templates.matchAll(/@\{(\w+)\.(name|game|followage)\}/g)) (wanted[m[1]] ??= new Set()).add(m[2])
+  const out = {}
+  for (const [param, props] of Object.entries(wanted)) {
+    if (!params[param]) continue
+    try {
+      const user = await fetchUserByLogin?.(params[param])
+      if (!user) continue
+      out[`${param}.name`] = user.display_name
+      if (props.has('game')) out[`${param}.game`] = (await fetchChannelInfo?.(user.id))?.game_name || '(unknown)'
+      if (props.has('followage') && mainUser?.id) out[`${param}.followage`] = await fetchFollowage?.(user.id, mainUser.id) ?? 'not following'
+    } catch {}
+  }
+  return out
+}
+
 export function renderTemplate(template, ctx) {
   let result = template
 
@@ -716,12 +769,19 @@ export function renderTemplate(template, ctx) {
   result = result.replace(/@\{([^}]+)\}/g, (match, varName) => {
     if (varName === 'user') return ctx.username ?? ''
     if (varName === 'display_name') return ctx.displayName ?? ctx.username ?? ''
-    if (varName === 'channel') return ctx.channel ?? ''
+    if (varName === 'channel') return channelDisplay(ctx.channel)
     if (varName === 'message') return ctx.text ?? ''
     if (varName === 'followage') return ctx.followage ?? '(unknown)'
     if (varName === 'redeem_title') return ctx.params?.redeem_title ?? ''
     if (varName === 'redeem_input') return ctx.params?.redeem_input ?? ''
     if (varName === 'redeem_cost') return ctx.params?.redeem_cost ?? ''
+    // Twitch-user param lookups: @{param.name|game|link|followage}
+    const dot = varName.match(USER_PROP_RE)
+    if (dot) {
+      const login = ctx.params?.[dot[1]] ?? ''
+      if (dot[2] === 'link') return login ? `https://twitch.tv/${login.toLowerCase()}` : ''
+      return ctx.userProps?.[varName] ?? (dot[2] === 'name' ? login : '(unknown)')
+    }
     // Named parameter from pattern capture/choice
     if (ctx.params && varName in ctx.params) return ctx.params[varName]
     return `[Can't find a variable named "${varName}". Maybe try re-creating it?]`
@@ -731,7 +791,7 @@ export function renderTemplate(template, ctx) {
   result = result
     .replace(/\{user\}/gi, ctx.username ?? '')
     .replace(/\{display_name\}/gi, ctx.displayName ?? ctx.username ?? '')
-    .replace(/\{channel\}/gi, ctx.channel ?? '')
+    .replace(/\{channel\}/gi, channelDisplay(ctx.channel))
     .replace(/\{message\}/gi, ctx.text ?? '')
     .replace(/\{param_(\w+)\}/gi, (_, name) => ctx.params?.[name] ?? '')
     .replace(/\{followage\}/gi, ctx.followage ?? '(unknown)')
@@ -773,8 +833,25 @@ function _applyTransform(val, op, args) {
   }
 }
 
+// Picks one entry; weights only count when manual + weighted and every option has one.
+function pickRandomValue(c) {
+  if (c.pickFrom === 'file') return readRandomLine(c.filePath ?? '', true, [])
+  const opts = (c.options ?? []).filter(o => String(o.value ?? '').trim())
+  if (opts.length === 0) return ''
+  if (!c.weighted) return opts[Math.floor(Math.random() * opts.length)].value
+  const total = opts.reduce((s, o) => s + Math.max(0, Number(o.weight) || 0), 0)
+  if (total <= 0) return opts[Math.floor(Math.random() * opts.length)].value
+  let r = Math.random() * total
+  for (const o of opts) {
+    r -= Math.max(0, Number(o.weight) || 0)
+    if (r < 0) return o.value
+  }
+  return opts[opts.length - 1].value
+}
+
 function applyVarModifiersFromConsiderations(considerations, params) {
   for (const c of considerations ?? []) {
+    if (c.enabled && c.type === 'random_variable' && c.name) { params[c.name] = pickRandomValue(c); continue }
     if (!c.enabled || !c.source || !(c.source in params)) continue
     if (c.type === 'map_variable') {
       const match = (c.mappings ?? []).find(m => m.from === params[c.source])
@@ -789,9 +866,11 @@ function applyVarModifiersFromConsiderations(considerations, params) {
 
 const _globalCooldowns     = {}  // triggerId -> timestamp
 const _userCooldowns       = {}  // `${triggerId}:${username}` -> timestamp
-const _chatActivityCounters = {} // triggerId -> message count since last fire
+const _chatActivityCounters = {} // triggerId -> _chatMsgCount at last fire
+let _chatMsgCount = 0
 const _sceneOnceUsed       = new Set() // sceneName already suppressed this session
 const _recentRedemptions   = {}  // rewardId -> last redemption timestamp
+const _firstWordsSeen      = new Map() // triggerId -> Set of usernames already matched this session
 
 export function checkAndSetCooldowns(trigger, username) {
   const now = Date.now()
@@ -849,9 +928,9 @@ async function evaluateConsiderations(considerations, msg, triggerId, opts) {
         waitMs = Math.max(waitMs, (c.seconds ?? 0) * 1000)
         break
       case 'chat_activity': {
-        const count = _chatActivityCounters[triggerId] ?? 0
+        const count = _chatMsgCount - (_chatActivityCounters[triggerId] ?? 0)
         if (count < (c.messageCount ?? 1)) return { pass: false, blockedBy: `chat_activity (${count}/${c.messageCount ?? 1} messages)` }
-        _chatActivityCounters[triggerId] = 0
+        _chatActivityCounters[triggerId] = _chatMsgCount
         break
       }
       case 'time_of_day': {
@@ -898,6 +977,7 @@ async function evaluateConsiderations(considerations, msg, triggerId, opts) {
       }
       case 'map_variable':
       case 'transform_variable':
+      case 'random_variable':
         break // applied after ctx.params is built; does not affect pass/fail
       case 'obs_source': {
         const scene = c.scene ?? opts.getCurrentScene?.()
@@ -1027,9 +1107,19 @@ async function evaluateConditionForResponse(condition, msg, opts) {
 
 // ── Random line reader ─────────────────────────────────────────────────────
 
+// Handles UTF-8 (with/without BOM) and UTF-16 LE/BE — Notepad's "Unicode" saves as UTF-16.
+export function readTextFileLines(filePath) {
+  const buf = fs.readFileSync(filePath)
+  let text
+  if (buf[0] === 0xFF && buf[1] === 0xFE) text = buf.toString('utf16le', 2)
+  else if (buf[0] === 0xFE && buf[1] === 0xFF) text = Buffer.from(buf.subarray(2)).swap16().toString('utf16le')
+  else text = buf.toString('utf8').replace(/^﻿/, '')
+  return text.split(/\r?\n|\r/).map(l => l.trim()).filter(Boolean)
+}
+
 function readRandomLine(filePath, randomize = true, weights = []) {
   try {
-    const lines = fs.readFileSync(filePath, 'utf8').split('\n').map(l => l.trim()).filter(Boolean)
+    const lines = readTextFileLines(filePath)
     if (lines.length === 0) return ''
     if (!randomize) return lines[0]
     if (weights.length === lines.length) {
@@ -1046,23 +1136,26 @@ function readRandomLine(filePath, randomize = true, weights = []) {
 
 // ── Full trigger run ───────────────────────────────────────────────────────
 
+// Keyed by triggers array identity; callers pass a new array whenever triggers change.
+const _triggerIndexCache = new WeakMap()
+
 export async function runTriggers(msg, triggers, opts = {}) {
   const {
-    sendChatMessage, sendAnnouncement, sendWhisper, fetchFollowage, fetchUserByLogin,
+    sendChatMessage, sendAnnouncement, sendWhisper, fetchFollowage, fetchUserByLogin, fetchChannelInfo,
     mainUser, botAccount,
     obsGetSceneItemList, obsSetSourceVisibility, obsPlayVideoInSource, getCurrentScene,
     globalSceneBlacklist = {}
   } = opts
   const fired = []
+  _chatMsgCount++
 
-  // Increment chat activity counters for all triggers
-  for (const t of triggers) {
-    _chatActivityCounters[t.id] = (_chatActivityCounters[t.id] ?? 0) + 1
-  }
+  let index = _triggerIndexCache.get(triggers)
+  if (!index) { index = buildTriggerIndex(triggers); _triggerIndexCache.set(triggers, index) }
+  const candidates = candidateTriggers(index, msg.text)
+  if (candidates.length === 0) return fired
+  const currentScene = getCurrentScene?.()
 
-  for (const trigger of triggers) {
-    // Scene blacklist check
-    const currentScene = getCurrentScene?.()
+  for (const trigger of candidates) {
     if (currentScene && globalSceneBlacklist[currentScene]) {
       if (globalSceneBlacklist[currentScene] === 'always') continue
       if (globalSceneBlacklist[currentScene] === 'once' && !_sceneOnceUsed.has(currentScene)) {
@@ -1149,6 +1242,8 @@ export async function runTriggers(msg, triggers, opts = {}) {
       }
     }
 
+    ctx.userProps = await resolveUserProps(allTemplates, ctx.params, { fetchUserByLogin, fetchChannelInfo, fetchFollowage, mainUser })
+
     // Apply wait consideration delay before first action
     if (waitMs > 0) await new Promise(r => setTimeout(r, waitMs))
 
@@ -1220,7 +1315,7 @@ async function _fireTimerTrigger(trigger) {
   const fresh = (getChatTriggers?.() ?? []).find(t => t.id === trigger.id)
   if (!fresh?.enabled) return
 
-  const ctx = { username: _channel ?? '', displayName: '', channel: _channel ?? '', text: '', params: {} }
+  const ctx = { username: _channel ?? '', displayName: _channelDisplay ?? _channel ?? '', channel: _channel ?? '', text: '', params: {} }
   const response = fresh.responses?.[0]
   if (!response) return
 
@@ -1384,7 +1479,7 @@ export async function handleOBSSourceChange(event) {
     if (!sceneMatch || !sourceMatch || !stateMatch) continue
     if (!checkAndSetCooldowns(trigger, 'obs')) continue
 
-    const ctx = { username: _channel ?? '', displayName: '', channel: _channel ?? '', text: '', params: {} }
+    const ctx = { username: _channel ?? '', displayName: _channelDisplay ?? _channel ?? '', channel: _channel ?? '', text: '', params: {} }
     const response = trigger.responses?.[0]
     if (!response) continue
 

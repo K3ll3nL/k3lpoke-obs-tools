@@ -32,6 +32,7 @@ contextBridge.exposeInMainWorld('api', {
     setLoudness: (id, lufs) => invoke('clips:setLoudness', { id, lufs }),
     setNormalized: (id, enabled) => invoke('clips:setNormalized', { id, enabled }),
     getVideoUrl: (id) => invoke('clips:getVideoUrl', { id }),
+    onRemoved: (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('clips:removed', h); return () => ipcRenderer.removeListener('clips:removed', h) },
     approve: (id) => invoke('clips:approve', { id }),
     deny: (id) => invoke('clips:deny', { id }),
     setStatus: (id, status) => invoke('clips:setStatus', { id, status }),
@@ -155,6 +156,7 @@ contextBridge.exposeInMainWorld('api', {
     onUpdateReady:     (cb)      => ipcRenderer.on('app:update-ready', (_, d) => cb(d)),
     installUpdate:     ()        => invoke('app:installUpdate'),
     openFile:          (filters) => invoke('app:openFile', { filters }),
+    readTextLines:     (filePath) => invoke('app:readTextLines', { filePath }),
   },
 
   // Chat Triggers
@@ -186,6 +188,7 @@ contextBridge.exposeInMainWorld('api', {
     onMessage:            (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('chatTriggers:message',          h); return () => ipcRenderer.removeListener('chatTriggers:message',          h) },
     onPlayMedia:          (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('chatTriggers:playMedia',        h); return () => ipcRenderer.removeListener('chatTriggers:playMedia',        h) },
     onActivationChanged:  (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('chatTriggers:activationChanged',h); return () => ipcRenderer.removeListener('chatTriggers:activationChanged',h) },
+    onSendIssue:          (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('chatTriggers:sendIssue',        h); return () => ipcRenderer.removeListener('chatTriggers:sendIssue',        h) },
     onRedemption:         (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('chatTriggers:redemption',       h); return () => ipcRenderer.removeListener('chatTriggers:redemption',       h) },
 
     stream: {

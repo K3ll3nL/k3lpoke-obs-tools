@@ -4,14 +4,14 @@ import path from 'path'
 import { autoUpdater } from 'electron-updater'
 import {
   initTwitch, getTwitchState, setClientId, startOAuthFlow, logout,
-  fetchUserByLogin, fetchClips, getClipVideoUrl, checkClipsExist, fetchClipDetails, deleteClipsOnTwitch, searchChannels as searchTwitchChannels,
-  validateTokenScopes, startBotOAuthFlow, logoutBot as logoutBotAccount,
-  sendChatMessage, sendAnnouncement, sendWhisper, validateBotTokenScopes, fetchFollowage as fetchFollowageApi, fetchCurrentStream, searchCategories,
-  fetchCustomRewards,
+  fetchUserByLogin, fetchClips, getClipVideoUrl, checkClipsExist, checkClipsExistGql, fetchClipDetails, deleteClipsOnTwitch, searchChannels as searchTwitchChannels,
+  validateTokenScopes, startBotOAuthFlow, logoutBot as logoutBotAccount, isTokenValid, expireMainAuth,
+  sendChatMessage as sendChatMessageRaw, sendAnnouncement as sendAnnouncementRaw, sendWhisper as sendWhisperRaw, validateBotTokenScopes, fetchFollowage as fetchFollowageApi, fetchCurrentStream, fetchChannelInfo, searchCategories,
+  fetchCustomRewards, onAuthExpired,
 } from './twitch.js'
 import { connectOBS, disconnectOBS, isConnected, getSceneList, addBrowserSource, switchScene, getSourceList, getSceneItemList, showDeviceInScene, setSourceVisibility, playVideoInSource, getCurrentScene, checkChatTriggersPlayer, onSceneItemEnableStateChanged, getSceneItemListFull, createScene, removeScene, setSceneItemTransform, createSceneItem, removeSceneItem, duplicateSceneItem, setSceneItemIndex, getInputSettings, setInputSettingsObs, removeInput, getGroupSceneItemList, removeInputFull, getSceneCollectionList, setCurrentSceneCollection, createSceneCollection } from './obs.js'
 import {
-  getClipsByStatus, getAllClips, getNewClips, setClipStatus, bulkSetStatus, removeClip, reorderQueue,
+  getAllClipIds, getClipsByStatus, getAllClips, getNewClips, setClipStatus, bulkSetStatus, removeClip, reorderQueue,
   upsertClip, batchUpsertClips, clipExists, getChannels, upsertChannel, removeChannel,
   scheduleClipDeletion, bulkScheduleClipDeletion, getScheduledForDeletion, getOverdueForDeletion,
   updateChannelCursor, getSetting, setSetting, getAllSettings, setClipVolume, setClipTrim, setClipEnvelope,
@@ -24,23 +24,33 @@ import {
   setShinyLayoutPosition, replaceShinyLayoutPositions, removeDeviceFromShinyLayout, removeShinyLayout,
   setActiveShinyLayout, getActiveShinyLayout, getShinyLayoutForScene,
   setShinyLayoutPositionScene, resolveDeviceShinyScene,
-  getChatTriggers, createChatTrigger, updateChatTrigger, deleteChatTrigger,
+  getChatTriggers, getChatTriggersVersion, createChatTrigger, updateChatTrigger, deleteChatTrigger,
   getChatBotAccount
 } from './db.js'
 import {
   startChatEngine, stopChatEngine, getChatEngineStatus, setEngineWindow,
   runTriggers, matchTrigger, testTriggerMatch, dryRunTrigger, onChatMessage,
   setEngineOpts, startTimerTriggers, stopTimerTriggers, syncTimerTrigger, handleOBSSourceChange,
-  startStreamPolling, stopStreamPolling, getStreamState,
+  startStreamPolling, stopStreamPolling, getStreamState, readTextFileLines,
 } from './chatEngine.js'
 import {
   playClip, stopPlayer, getPlayerState, getNextClipState, broadcastSkipNext,
-  getOverlayUrl, sendOverlayConfig, notifyQueueUpdated, broadcastVolumeChange,
+  getOverlayUrl, sendOverlayConfig, notifyQueueUpdated, purgeClips, broadcastVolumeChange,
   setMainWindow, broadcastPlaybackConfigUpdated, broadcastCollectionsUpdated,
   notifyShinyLayoutChanged, getDockUrl
 } from './server.js'
 
-export async function runAutoFetch(win) {
+let _autoFetchInFlight = null
+
+// Dedupes overlapping calls (hourly timer + opening the Clip Player)
+export function runAutoFetch(win) {
+  if (!_autoFetchInFlight) {
+    _autoFetchInFlight = _runAutoFetch(win).finally(() => { _autoFetchInFlight = null })
+  }
+  return _autoFetchInFlight
+}
+
+async function _runAutoFetch(win) {
   const channels = getChannels()
   let totalAdded = 0
   for (const ch of channels) {
@@ -72,7 +82,20 @@ export async function runAutoFetch(win) {
     notifyQueueUpdated()
     win?.webContents.send('twitch:new-clips', { count: totalAdded })
   }
+  await purgeDeletedClips()
   return totalAdded
+}
+
+// Remove local clips that no longer exist on Twitch (deleted by streamer/mod/Twitch)
+async function purgeDeletedClips() {
+  const ids = getAllClipIds()
+  if (!ids.length) return
+  try {
+    const existing = await checkClipsExistGql(ids)
+    purgeClips(ids.filter(id => !existing.has(id)))
+  } catch {
+    // API failure — never purge on partial/unknown results
+  }
 }
 
 function handle(channel, fn) {
@@ -87,6 +110,7 @@ function handle(channel, fn) {
 
 export async function registerIpcHandlers(mainWindow) {
   setMainWindow(mainWindow)
+  onAuthExpired(() => mainWindow.webContents.send('twitch:auth-changed', { user: null, expired: true }))
   // ── Twitch ────────────────────────────────────────────────────────────────
   handle('twitch:getState', () => {
     const state = getTwitchState()
@@ -104,7 +128,7 @@ export async function registerIpcHandlers(mainWindow) {
   handle('twitch:setClientId', (id) => setClientId(id))
 
   handle('twitch:login', async () => {
-    const user = await startOAuthFlow()
+    const user = await startOAuthFlow(mainWindow)
     if (user) {
       upsertChannel({
         name: user.login,
@@ -427,6 +451,10 @@ export async function registerIpcHandlers(mainWindow) {
     })
     return r.canceled ? null : r.filePaths[0]
   })
+  handle('app:readTextLines', ({ filePath } = {}) => {
+    const lines = readTextFileLines(filePath)
+    return { count: lines.length, lines: lines.slice(0, 1000) }
+  })
 
   // ── Player ────────────────────────────────────────────────────────────────
   handle('player:getState', () => getPlayerState())
@@ -455,7 +483,14 @@ export async function registerIpcHandlers(mainWindow) {
   handle('overlay:getUrl', () => getOverlayUrl())
   handle('overlay:sendConfig', ({ config }) => sendOverlayConfig(config))
 
-  handle('clips:getVideoUrl', ({ id }) => getClipVideoUrl(id))
+  handle('clips:getVideoUrl', async ({ id }) => {
+    try {
+      return await getClipVideoUrl(id)
+    } catch (err) {
+      if (err.message === 'Clip not found') purgeClips([id])
+      throw err
+    }
+  })
 
   handle('twitch:fetchNewClips', async () => runAutoFetch(mainWindow))
 
@@ -583,6 +618,29 @@ export async function registerIpcHandlers(mainWindow) {
 
   setEngineWindow(mainWindow)
 
+  // Turn fixable send failures (dead token, unverified phone) into a prompt instead of a log line.
+  // Main-account 401s reuse the existing ReconnectPrompt via expireMainAuth.
+  const botSummary = (bot) => ({ login: bot?.user?.login, displayName: bot?.user?.display_name, avatar: bot?.user?.profile_image_url })
+  const sendIssue = (issue) => mainWindow.webContents.send('chatTriggers:sendIssue', issue)
+  function reportSendIssue(err, senderToken) {
+    const status = err.response?.status ?? err.whisperIssue?.status
+    const bot = getChatBotAccount()
+    const viaBot = !!senderToken && senderToken === bot?.token
+    if (err.whisperIssue?.code === 'phone') {
+      const acct = viaBot ? botSummary(bot) : botSummary({ user: getTwitchState().user })
+      return sendIssue({ code: 'phone', account: acct, viaBot })
+    }
+    if (status !== 401) return
+    if (viaBot) sendIssue({ code: 'bot-auth', account: botSummary(bot) })
+    else expireMainAuth()
+  }
+  const reporting = (fn, tokenIdx) => async (...args) => {
+    try { return await fn(...args) } catch (err) { reportSendIssue(err, args[tokenIdx]); throw err }
+  }
+  const sendChatMessage = reporting(sendChatMessageRaw, 3)
+  const sendAnnouncement = reporting(sendAnnouncementRaw, 4)
+  const sendWhisper = reporting(sendWhisperRaw, 3)
+
   // Set engine opts for timer/OBS triggers (use getters so state is always fresh)
   setEngineOpts({
     sendChatMessage,
@@ -598,9 +656,15 @@ export async function registerIpcHandlers(mainWindow) {
   })
 
   // Wire up incoming chat messages → trigger runner
+  // Stable array identity between edits lets runTriggers reuse its compiled index.
+  let enabledTriggers = { version: -1, list: [] }
   onChatMessage(async (msg) => {
     const state = getTwitchState()
-    const triggers = getChatTriggers().filter(t => t.enabled)
+    const version = getChatTriggersVersion()
+    if (version !== enabledTriggers.version) {
+      enabledTriggers = { version, list: getChatTriggers().filter(t => t.enabled) }
+    }
+    const triggers = enabledTriggers.list
     const bot = getChatBotAccount()
     const sceneBlacklist = getSetting('sceneBlacklist') ?? {}
     await runTriggers(msg, triggers, {
@@ -609,6 +673,7 @@ export async function registerIpcHandlers(mainWindow) {
       sendWhisper,
       fetchFollowage: fetchFollowageApi,
       fetchUserByLogin,
+      fetchChannelInfo,
       mainUser: state.user,
       botAccount: bot,
       obsGetSceneItemList: getSceneItemList,
@@ -655,9 +720,10 @@ export async function registerIpcHandlers(mainWindow) {
     const state = getTwitchState()
     if (!state.user || !state.accessToken) throw new Error('Not authenticated with Twitch')
     const bot = getChatBotAccount()
-    startChatEngine(state.user.login, state.accessToken, state.user.login, state.user.id, bot?.user?.id ?? null, bot?.token ?? null)
+    startChatEngine(state.user.login, state.accessToken, state.user.login, state.user.id, bot?.user?.id ?? null, bot?.token ?? null, state.user.display_name)
     startTimerTriggers(getChatTriggers().filter(t => t.enabled))
     startStreamPolling()
+    if (bot?.token) isTokenValid(bot.token).then(ok => { if (!ok) sendIssue({ code: 'bot-auth', account: botSummary(bot) }) })
     return getChatEngineStatus()
   })
 
@@ -674,7 +740,7 @@ export async function registerIpcHandlers(mainWindow) {
   handle('chatTriggers:getBotScopes', () => validateBotTokenScopes(getChatBotAccount()?.token))
 
   handle('chatTriggers:reauth', async () => {
-    const user = await startOAuthFlow()
+    const user = await startOAuthFlow(mainWindow)
     if (user) {
       upsertChannel({ name: user.login, display_name: user.display_name, broadcaster_id: user.id, is_own: 1 })
       mainWindow.webContents.send('twitch:auth-changed', { user })
@@ -688,7 +754,7 @@ export async function registerIpcHandlers(mainWindow) {
   })
 
   handle('chatTriggers:loginBot', async () => {
-    const bot = await startBotOAuthFlow()
+    const bot = await startBotOAuthFlow(mainWindow)
     return { login: bot.user?.login, displayName: bot.user?.display_name, avatar: bot.user?.profile_image_url }
   })
 
@@ -726,7 +792,7 @@ export async function registerIpcHandlers(mainWindow) {
       isVip: false,
       isBroadcaster: false,
     }
-    return triggers.map(t => ({ id: t.id, name: t.name, matches: !!matchTrigger({ ...t, enabled: true }, fakeMsg) }))
+    return triggers.map(t => ({ id: t.id, name: t.name, type: t.type, enabled: !!t.enabled, matches: !!matchTrigger({ ...t, enabled: true }, fakeMsg) }))
   })
 
   // Auto-start engine if it was previously running
@@ -734,7 +800,7 @@ export async function registerIpcHandlers(mainWindow) {
     const state = getTwitchState()
     if (state.user && state.accessToken) {
       const bot = getChatBotAccount()
-      startChatEngine(state.user.login, state.accessToken, state.user.login, state.user.id, bot?.user?.id ?? null, bot?.token ?? null)
+      startChatEngine(state.user.login, state.accessToken, state.user.login, state.user.id, bot?.user?.id ?? null, bot?.token ?? null, state.user.display_name)
       startTimerTriggers(getChatTriggers().filter(t => t.enabled))
     }
   }

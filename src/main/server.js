@@ -5,9 +5,9 @@ import cors from 'cors'
 import path from 'path'
 import axios from 'axios'
 import { fileURLToPath } from 'url'
-import { app as electronApp } from 'electron'
+import { app as electronApp, BrowserWindow } from 'electron'
 import { getClipVideoUrl, receiveAuthToken, fetchCurrentStream, getTwitchState } from './twitch.js'
-import { getClipsByStatus, getClipById, getSetting, getCollections, getPlaybackConfig, getShinyLayoutForScene, getShinyDevices, resolveDeviceShinyScene } from './db.js'
+import { removeClips, getClipsByStatus, getClipById, getSetting, getCollections, getPlaybackConfig, getShinyLayoutForScene, getShinyDevices, resolveDeviceShinyScene } from './db.js'
 import { showDeviceInScene } from './obs.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -73,6 +73,7 @@ app.get('/api/clip-url/:id', async (req, res) => {
     const url = await getClipVideoUrl(req.params.id)
     res.json({ url })
   } catch (err) {
+    if (err.message === 'Clip not found') purgeClips([req.params.id])
     res.status(500).json({ error: err.message })
   }
 })
@@ -252,6 +253,14 @@ export function stopPlayer() {
 export function sendOverlayConfig(config) {
   storedOverlayConfig = config
   broadcastToOverlay({ type: 'config', config })
+}
+
+// Clips deleted on Twitch: drop from DB + collections, refresh overlay and app lists
+export function purgeClips(ids) {
+  if (!ids.length) return
+  removeClips(ids)
+  notifyQueueUpdated()
+  for (const w of BrowserWindow.getAllWindows()) w.webContents.send('clips:removed', { ids })
 }
 
 export function notifyQueueUpdated() {

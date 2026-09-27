@@ -169,6 +169,11 @@ export default function Collections() {
     ...collections
   ], [collections, approvedCount])
 
+  useEffect(() => window.api.clips.onRemoved(({ ids }) => {
+    setClips(prev => prev.filter(c => !ids.includes(c.id)))
+    loadCollections()
+  }), [])
+
   async function loadCollections() {
     const r = await window.api.collections.list()
     if (r.ok) setCollections(r.data)

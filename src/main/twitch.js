@@ -1,4 +1,5 @@
 import axios from 'axios'
+import https from 'node:https'
 import { shell, BrowserWindow } from 'electron'
 import { getSetting, setSetting, setChatBotAccount } from './db.js'
 
@@ -11,9 +12,16 @@ const DEFAULT_CLIENT_ID = '0ue4vlu07adeae3lxj3e7euyuhvmyx'
 // Twitch's internal GQL client ID — required for playback token endpoint
 const GQL_CLIENT_ID = 'kimne78kx3ncx6brgo4mv6wki5h1ko'
 
+// Node's default keep-alive agent reuses TLS sockets; axios adds an 'error' listener
+// per request on the socket, which trips MaxListenersExceededWarning. Use fresh sockets.
+axios.defaults.httpsAgent = new https.Agent({ keepAlive: false })
+
 let clientId = DEFAULT_CLIENT_ID
 let accessToken = null
 let currentUser = null
+
+let _onAuthExpired = null
+export function onAuthExpired(cb) { _onAuthExpired = cb }
 
 export function initTwitch() {
   clientId = getSetting('twitchClientId') ?? DEFAULT_CLIENT_ID
@@ -53,7 +61,41 @@ export function receiveAuthToken(token, state = 'main') {
   storeToken(token).then(resolve).catch(reject)
 }
 
-export async function startOAuthFlow() {
+// Opens the Twitch login popup. On close, the parent window is re-focused and forced to
+// repaint — on Windows it can otherwise stay frozen/unfocused until a manual reload.
+function openAuthWindow({ url, title, partition, parent, onClosed }) {
+  const hasParent = parent && !parent.isDestroyed()
+  const win = new BrowserWindow({
+    width: 500,
+    height: 700,
+    title,
+    parent: hasParent ? parent : undefined,
+    webPreferences: { partition, nodeIntegration: false, contextIsolation: true }
+  })
+  win.setMenuBarVisibility(false)
+  win.loadURL(url)
+  win.on('closed', () => {
+    if (hasParent && !parent.isDestroyed()) {
+      if (parent.isMinimized()) parent.restore()
+      parent.show()
+      parent.focus()
+      parent.webContents.focus()
+      parent.webContents.invalidate()
+    }
+    onClosed()
+  })
+  // Close ~1.5s after the callback page loads (token extracted by then)
+  win.webContents.on('did-navigate', (_, navUrl) => {
+    if (navUrl.startsWith(REDIRECT_URI)) {
+      setTimeout(() => { if (!win.isDestroyed()) win.close() }, 1500)
+    }
+  })
+  return win
+}
+
+function closeWin(win) { if (win && !win.isDestroyed()) win.close() }
+
+export async function startOAuthFlow(parent) {
   if (!clientId) throw new Error('No Client ID configured')
 
   const url =
@@ -64,40 +106,27 @@ export async function startOAuthFlow() {
     `&force_verify=true`
 
   return new Promise((resolve, reject) => {
-    _pendingAuthResolve = () => resolve(currentUser)
     let win = null
+    _pendingAuthResolve = () => { clearTimeout(timer); resolve(currentUser) }
 
     const timer = setTimeout(() => {
       _pendingAuthResolve = null
       _pendingAuthReject = null
-      win?.close()
+      closeWin(win)
       reject(new Error('Auth timed out'))
     }, 5 * 60 * 1000)
 
-    _pendingAuthReject = (err) => { clearTimeout(timer); win?.close(); reject(err) }
+    _pendingAuthReject = (err) => { clearTimeout(timer); closeWin(win); reject(err) }
 
-    win = new BrowserWindow({
-      width: 500,
-      height: 700,
-      title: 'Connect Twitch Account',
-      webPreferences: {
-        partition: 'main-auth',
-        nodeIntegration: false,
-        contextIsolation: true
-      }
-    })
-    win.loadURL(url)
-    win.on('closed', () => {
-      if (_pendingAuthResolve) {
-        _pendingAuthResolve = null
-        _pendingAuthReject = null
-        clearTimeout(timer)
-        reject(new Error('Auth window closed'))
-      }
-    })
-    win.webContents.on('did-navigate', (_, navUrl) => {
-      if (navUrl.startsWith(REDIRECT_URI)) {
-        setTimeout(() => { if (!win.isDestroyed()) win.close() }, 2000)
+    win = openAuthWindow({
+      url, parent, title: 'Connect Twitch Account', partition: 'main-auth',
+      onClosed: () => {
+        if (_pendingAuthResolve) {
+          _pendingAuthResolve = null
+          _pendingAuthReject = null
+          clearTimeout(timer)
+          reject(new Error('Auth window closed'))
+        }
       }
     })
   })
@@ -139,8 +168,35 @@ async function apiGet(path, params = {}, attempt = 0) {
       await new Promise(r => setTimeout(r, waitMs))
       return apiGet(path, params, attempt + 1)
     }
+    if (err.response?.status === 401) handleAuthExpired()
     throw err
   }
+}
+
+export { handleAuthExpired as expireMainAuth }
+
+// False only when Twitch explicitly rejects the token (network errors count as valid)
+export async function isTokenValid(token) {
+  if (!token) return false
+  try {
+    await axios.get('https://id.twitch.tv/oauth2/validate', { headers: { Authorization: `OAuth ${token}` } })
+    return true
+  } catch (err) { return err.response?.status !== 401 }
+}
+
+function handleAuthExpired() {
+  if (!accessToken) return
+  accessToken = null
+  currentUser = null
+  setSetting('twitchAccessToken', null)
+  setSetting('twitchUser', null)
+  try { _onAuthExpired?.() } catch {}
+}
+
+// Channel info persists offline: game_name is the last category they streamed/set.
+export async function fetchChannelInfo(broadcasterId) {
+  const data = await apiGet('/channels', { broadcaster_id: broadcasterId })
+  return data.data[0] ?? null
 }
 
 export async function fetchCurrentStream(userLogin) {
@@ -215,8 +271,13 @@ export async function checkClipsExist(clipIds) {
   for (let i = 0; i < clipIds.length; i += 100) {
     const batch = clipIds.slice(i, i + 100)
     const qs = batch.map(id => `id=${encodeURIComponent(id)}`).join('&')
-    const res = await axios.get(`${TWITCH_API}/clips?${qs}&first=100`, { headers: apiHeaders() })
-    res.data.data.forEach(c => existing.add(c.id))
+    try {
+      const res = await axios.get(`${TWITCH_API}/clips?${qs}&first=100`, { headers: apiHeaders() })
+      res.data.data.forEach(c => existing.add(c.id))
+    } catch (err) {
+      if (err.response?.status === 401) handleAuthExpired()
+      throw err
+    }
     if (i + 100 < clipIds.length) await new Promise(r => setTimeout(r, 250))
   }
   return existing
@@ -233,7 +294,9 @@ export async function fetchClipDetails(clipIds) {
         clips[c.id] = { thumbnail_url: c.thumbnail_url, view_count: c.view_count, created_at: c.created_at }
       })
       if (i + 100 < clipIds.length) await new Promise(r => setTimeout(r, 250))
-    } catch {}
+    } catch (err) {
+      if (err.response?.status === 401) { handleAuthExpired(); break }
+    }
   }
   return clips
 }
@@ -297,7 +360,7 @@ export async function validateTokenScopes() {
 
 const BOT_SCOPES = 'chat:read user:write:chat channel:read:redemptions user:manage:whispers moderator:manage:announcements'
 
-export async function startBotOAuthFlow() {
+export async function startBotOAuthFlow(parent) {
   if (!clientId) throw new Error('No Client ID configured')
   const url =
     `${TWITCH_AUTH_URL}?client_id=${clientId}` +
@@ -308,40 +371,26 @@ export async function startBotOAuthFlow() {
     `&force_verify=true`
 
   return new Promise((resolve, reject) => {
-    _pendingBotResolve = resolve
     let win = null
+    _pendingBotResolve = (v) => { clearTimeout(timer); resolve(v) }
     const timer = setTimeout(() => {
       _pendingBotResolve = null
       _pendingBotReject = null
-      win?.close()
+      closeWin(win)
       reject(new Error('Bot auth timed out'))
     }, 5 * 60 * 1000)
-    _pendingBotReject = (err) => { clearTimeout(timer); win?.close(); reject(err) }
+    _pendingBotReject = (err) => { clearTimeout(timer); closeWin(win); reject(err) }
 
-    // Use an isolated window with no saved credentials to prevent autofill
-    win = new BrowserWindow({
-      width: 500,
-      height: 700,
-      title: 'Connect Bot Account',
-      webPreferences: {
-        partition: 'bot-auth',
-        nodeIntegration: false,
-        contextIsolation: true
-      }
-    })
-    win.loadURL(url)
-    win.on('closed', () => {
-      if (_pendingBotResolve) {
-        _pendingBotResolve = null
-        _pendingBotReject = null
-        clearTimeout(timer)
-        reject(new Error('Auth window closed'))
-      }
-    })
-    // Close the window ~2s after the callback page loads (token extracted by then)
-    win.webContents.on('did-navigate', (_, navUrl) => {
-      if (navUrl.startsWith(REDIRECT_URI)) {
-        setTimeout(() => { if (!win.isDestroyed()) win.close() }, 2000)
+    // Isolated partition with no saved credentials to prevent autofill
+    win = openAuthWindow({
+      url, parent, title: 'Connect Bot Account', partition: 'bot-auth',
+      onClosed: () => {
+        if (_pendingBotResolve) {
+          _pendingBotResolve = null
+          _pendingBotReject = null
+          clearTimeout(timer)
+          reject(new Error('Auth window closed'))
+        }
       }
     })
   })
@@ -390,11 +439,29 @@ export async function sendAnnouncement(broadcasterId, moderatorId, text, color =
 }
 
 export async function sendWhisper(fromUserId, toUserId, message, token) {
-  await axios.post(
-    `${TWITCH_API}/whispers?from_user_id=${fromUserId}&to_user_id=${toUserId}`,
-    { message: message.slice(0, 500) },
-    { headers: { 'Client-Id': clientId, Authorization: `Bearer ${token ?? accessToken}` } }
-  )
+  try {
+    await axios.post(
+      `${TWITCH_API}/whispers?from_user_id=${fromUserId}&to_user_id=${toUserId}`,
+      { message: message.slice(0, 500) },
+      { headers: { 'Client-Id': clientId, Authorization: `Bearer ${token ?? accessToken}` } }
+    )
+  } catch (err) {
+    const status = err.response?.status
+    const twitchMsg = err.response?.data?.message ?? err.message
+    const e = new Error(`Whisper failed (${status ?? '?'}): ${twitchMsg}`)
+    e.whisperIssue = { code: classifyWhisperError(status, twitchMsg), status, detail: twitchMsg }
+    throw e
+  }
+}
+
+// phone/scope are fixable by the streamer; blocked/rate/notfound are per-viewer or transient
+function classifyWhisperError(status, msg = '') {
+  if (/phone/i.test(msg)) return 'phone'
+  if (status === 401) return 'scope'
+  if (status === 429) return 'rate'
+  if (status === 404) return 'notfound'
+  if (status === 403) return 'blocked'
+  return 'unknown'
 }
 
 export async function fetchFollowage(userId, broadcasterId) {
@@ -514,6 +581,24 @@ async function fetchClipToken(clipId, hash) {
   const clip = res.data?.data?.clip
   if (!clip) throw new Error('Clip not found')
   return clip
+}
+
+// GQL existence check — Helix keeps returning deleted clips for a while; GQL
+// returns null immediately (same source the player uses). Throws on any error.
+export async function checkClipsExistGql(clipIds) {
+  const existing = new Set()
+  for (let i = 0; i < clipIds.length; i += 100) {
+    const batch = clipIds.slice(i, i + 100)
+    const query = 'query {' + batch.map((id, j) => `c${j}: clip(slug: ${JSON.stringify(id)}) { id }`).join(' ') + '}'
+    const res = await axios.post(TWITCH_GQL, { query }, {
+      headers: { 'Client-ID': GQL_CLIENT_ID, 'Content-Type': 'application/json' }
+    })
+    const data = res.data?.data
+    if (res.data?.errors?.length || !data) throw new Error('GQL clip check failed')
+    batch.forEach((id, j) => { if (data[`c${j}`] !== null) existing.add(id) })
+    if (i + 100 < clipIds.length) await new Promise(r => setTimeout(r, 250))
+  }
+  return existing
 }
 
 export async function getClipVideoUrl(clipId) {

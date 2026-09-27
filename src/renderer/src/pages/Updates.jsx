@@ -266,6 +266,10 @@ export default function Updates() {
     })
   }, [load])
 
+  useEffect(() => window.api.clips.onRemoved(({ ids }) => {
+    setClips(prev => prev.filter(c => !ids.includes(c.id)))
+  }), [])
+
   useEffect(() => {
     setDisplayCount(20)
   }, [clips])
@@ -415,7 +419,6 @@ export default function Updates() {
     lastSelIdxRef.current = null
   }
 
-  const sinceLabel = lastCheck ? new Date(lastCheck).toLocaleString() : 'the beginning'
   const selectionActive = selectedIds.size > 0
   const pendingClips = clips.filter(c => c.status === 'pending')
 
@@ -426,7 +429,7 @@ export default function Updates() {
           <div>
             <h1 className="font-bold text-lg text-twitch-text">Updates</h1>
             <p className="text-xs text-twitch-muted">
-              {loading ? 'Loading...' : `${pendingClips.length} new clip${pendingClips.length !== 1 ? 's' : ''} since ${sinceLabel}`}
+              {loading ? 'Loading...' : `${pendingClips.length} clip${pendingClips.length !== 1 ? 's' : ''} to review`}
             </p>
           </div>
 
@@ -525,7 +528,7 @@ export default function Updates() {
 
           {!loading && pendingClips.length === 0 && (
             <div className="text-center mt-16 space-y-3">
-              <p className="text-twitch-muted text-sm">No new clips since {sinceLabel}.</p>
+              <p className="text-twitch-muted text-sm">0 clips to review.</p>
               <p className="text-twitch-border text-xs">Hit "Refresh All Channels" to check for new clips from everyone you follow.</p>
             </div>
           )}

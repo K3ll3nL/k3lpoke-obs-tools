@@ -15,6 +15,28 @@ const HANDLES = {
 }
 
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)) }
+
+// Allows backspacing the field to empty while typing instead of a clamp
+// snapping a digit back in on every keystroke; reverts on blur if left empty.
+function NumberField({ value, onChange, min, max, className }) {
+  const [local, setLocal] = useState(String(value ?? ''))
+  useEffect(() => { setLocal(String(value ?? '')) }, [value])
+  const handleChange = (e) => {
+    const raw = e.target.value
+    setLocal(raw)
+    if (raw === '') return
+    const n = parseInt(raw, 10)
+    if (Number.isNaN(n)) return
+    onChange(clamp(n, min, max))
+  }
+  const handleBlur = () => {
+    if (local === '') setLocal(String(value ?? min ?? 0))
+  }
+  return (
+    <input type="number" min={min} max={max} value={local}
+      onChange={handleChange} onBlur={handleBlur} className={className} />
+  )
+}
 function uid() { return Math.random().toString(36).slice(2, 8) }
 
 function toOBS(e, el) {
@@ -363,9 +385,8 @@ export default function SceneArranger({ obsConnected }) {
                   {[['X','x',0,OBS_W],['Y','y',0,OBS_H],['W','w',40,OBS_W],['H','h',40,OBS_H]].map(([lbl, k, lo, hi]) => (
                     <div key={k} className="flex items-center gap-1">
                       <span className="text-xs text-twitch-muted w-3 shrink-0">{lbl}</span>
-                      <input
-                        type="number" min={lo} max={hi} value={sel[k]}
-                        onChange={e => updateZone(sel.id, { [k]: clamp(parseInt(e.target.value) || 0, lo, hi) })}
+                      <NumberField value={sel[k]} min={lo} max={hi}
+                        onChange={v => updateZone(sel.id, { [k]: v })}
                         className="w-full px-1.5 py-1 rounded bg-twitch-mid border border-white/10 text-white text-xs focus:outline-none focus:border-indigo-500 min-w-0"
                       />
                     </div>

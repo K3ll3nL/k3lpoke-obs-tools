@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, Wifi, WifiOff, Loader, Trash2, Edit2, Terminal, MessageSquare, ChevronDown, ChevronUp, Zap, Radio, Clock } from 'lucide-react'
+import { Plus, Wifi, WifiOff, Loader, Trash2, Edit2, Terminal, MessageSquare, ChevronDown, ChevronUp, Zap, Radio, Clock, Layers, Users } from 'lucide-react'
+import { findCollisions } from '../lib/triggerOverlap.js'
 
 // ── Example cards shown in the empty state ────────────────────────────────────
 
@@ -103,11 +104,12 @@ function stripPattern(pattern) {
     .trim()
 }
 
-function TriggerCard({ trigger, onEdit, onDelete, onToggle }) {
+function TriggerCard({ trigger, onEdit, onDelete, onToggle, collisions = [] }) {
   const isCommand      = trigger.type === 'command'
   const isObsSource    = trigger.type === 'obs_source'
   const isTimer        = trigger.type === 'timer'
   const isChannelPoint = trigger.type === 'channel_point'
+  const isFirstWords   = trigger.type === 'first_words'
   const firstAction  = trigger.responses?.[0]?.actions?.[0]
   const extraActions = (trigger.responses?.[0]?.actions?.length ?? 1) - 1
 
@@ -124,6 +126,10 @@ function TriggerCard({ trigger, onEdit, onDelete, onToggle }) {
     }
   } else if (isChannelPoint) {
     matchSummary = trigger.rewardTitle || trigger.rewardId || 'Any reward'
+  } else if (isFirstWords) {
+    matchSummary = (trigger.firstWordsMode ?? 'first_message') === 'starts_with'
+      ? `starts with "${trigger.firstWordsText || '...'}"`
+      : "chatter's first message"
   } else {
     const stripped = stripPattern(trigger.pattern)
     matchSummary = stripped || ''
@@ -133,27 +139,31 @@ function TriggerCard({ trigger, onEdit, onDelete, onToggle }) {
     : isObsSource ? 'bg-amber-900/30'
     : isTimer ? 'bg-blue-900/30'
     : isChannelPoint ? 'bg-yellow-900/30'
+    : isFirstWords ? 'bg-pink-900/30'
     : 'bg-purple-900/30'
 
   const BadgeIcon = isCommand ? Terminal
     : isObsSource ? Radio
     : isTimer ? Clock
     : isChannelPoint ? Zap
+    : isFirstWords ? Users
     : MessageSquare
 
   const badgeIconCls = isCommand ? 'text-teal-400'
     : isObsSource ? 'text-amber-400'
     : isTimer ? 'text-blue-400'
     : isChannelPoint ? 'text-yellow-400'
+    : isFirstWords ? 'text-pink-400'
     : 'text-purple-400'
 
-  const summaryPrefix = isCommand ? '! ' : isObsSource ? '📡 ' : isTimer ? '⏱ ' : isChannelPoint ? '⭐ ' : '≈ '
+  const summaryPrefix = isCommand ? '! ' : isObsSource ? '📡 ' : isTimer ? '⏱ ' : isChannelPoint ? '⭐ ' : isFirstWords ? '👋 ' : '≈ '
 
   return (
     <div
       className={`group relative flex items-start gap-3 p-4 rounded-xl border transition-colors cursor-pointer
         ${trigger.enabled
-          ? 'bg-twitch-surface border-twitch-border hover:border-teal-700/60'
+          ? collisions.length ? 'bg-twitch-surface border-amber-700/60 hover:border-amber-500/70'
+          : 'bg-twitch-surface border-twitch-border hover:border-teal-700/60'
           : 'bg-twitch-dark border-twitch-border opacity-50'}`}
       onClick={() => onEdit(trigger.id)}
     >
@@ -183,6 +193,18 @@ function TriggerCard({ trigger, onEdit, onDelete, onToggle }) {
         <p className="text-twitch-muted text-xs font-mono truncate">
           {summaryPrefix}{matchSummary || <span className="italic">no conditions</span>}
         </p>
+
+        {collisions.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1" title="These triggers fire on the same messages">
+            <Layers size={12} className="text-amber-400 shrink-0" />
+            {collisions.map(c => (
+              <button key={c.id} onClick={e => { e.stopPropagation(); onEdit(c.id) }}
+                className="text-xs px-1.5 py-0.5 rounded border bg-amber-900/20 border-amber-700/50 text-amber-300 hover:bg-amber-900/40 transition-colors">
+                {c.name || '(unnamed)'}
+              </button>
+            ))}
+          </div>
+        )}
 
         {/* Activation condition badges */}
         {trigger.activation?.mode === 'auto' && (() => {
@@ -348,7 +370,7 @@ export default function ChatTriggerList() {
       addLog({ level: 'fire', msg: `"${d.triggerName}" fired → ${label}` })
     })
     const offLog     = window.api.chatTriggers.onLog(d => addLog(d))
-    const offMessage = window.api.chatTriggers.onMessage(d => addLog({ level: 'msg', msg: `[${d.username}] ${d.text}` }))
+    const offMessage = window.api.chatTriggers.onMessage(d => addLog({ level: 'msg', msg: `[${d.displayName || d.username}] ${d.text}` }))
     const offActivation = window.api.chatTriggers.onActivationChanged(({ id, enabled }) =>
       setTriggers(prev => prev.map(t => t.id === id ? { ...t, enabled, activation: { ...t.activation, currentOverride: null } } : t))
     )
@@ -397,6 +419,7 @@ export default function ChatTriggerList() {
 
   const enabled  = triggers.filter(t => t.enabled).length
   const disabled = triggers.length - enabled
+  const collisions = findCollisions(triggers)
 
   return (
     <div className="flex flex-col h-full">
@@ -441,6 +464,7 @@ export default function ChatTriggerList() {
                   <TriggerCard
                     key={t.id}
                     trigger={t}
+                    collisions={collisions.get(t.id)}
                     onEdit={id => navigate(`/chat-triggers/edit/${id}`)}
                     onDelete={handleDelete}
                     onToggle={handleToggle}

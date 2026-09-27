@@ -63,7 +63,7 @@ function scheduleRetry() {
   isRetrying = true
   retryTimeout = setTimeout(() => {
     isRetrying = false
-    attemptConnect(lastConnectParams)
+    attemptConnect(lastConnectParams).catch(() => {})
   }, RETRY_INTERVAL)
 }
 

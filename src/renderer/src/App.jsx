@@ -4,6 +4,8 @@ import Nav from './components/Nav'
 import RightPanel from './components/RightPanel'
 import UndoToast from './components/UndoToast'
 import UpdatePrompt from './components/UpdatePrompt'
+import ReconnectPrompt from './components/ReconnectPrompt'
+import SendIssuePrompt from './components/SendIssuePrompt'
 import Setup from './pages/Setup'
 import ShinySetup from './pages/ShinySetup'
 import ShinyDevices from './pages/ShinyDevices'
@@ -21,6 +23,7 @@ import ChatTriggerSettings from './pages/ChatTriggerSettings'
 import SceneArranger from './pages/SceneArranger'
 import SceneBuilder from './pages/SceneBuilder'
 import SceneCleanup from './pages/SceneCleanup'
+import { appForRoute } from './apps'
 
 export default function App() {
   const [twitchUser, setTwitchUser] = useState(null)
@@ -64,6 +67,12 @@ export default function App() {
     })
     window.api.obs.onStatusChanged(({ connected }) => setObsConnected(connected))
   }, [])
+
+  // Pull new clips whenever the Clip Player is entered (incl. app boot landing on it)
+  const inClipPlayer = appForRoute(pathname)?.id === 'clip-queue'
+  useEffect(() => {
+    if (ready && twitchUser && inClipPlayer) window.api.twitch.fetchNewClips()
+  }, [ready, twitchUser, inClipPlayer])
 
   if (!ready) {
     return (
@@ -130,6 +139,8 @@ export default function App() {
       {isSetup && !hidePanel && <RightPanel />}
       <UndoToast />
       <UpdatePrompt />
+      <ReconnectPrompt />
+      <SendIssuePrompt />
     </div>
   )
 }

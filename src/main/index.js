@@ -15,6 +15,10 @@ const isDev = !app.isPackaged
 // Set userData path to use package name, not repo folder name
 app.setPath('userData', path.join(app.getPath('appData'), 'k3lpoke-obs-tools'))
 
+// Windows occlusion tracking can leave the main window unpainted ("frozen") after a popup
+// (e.g. the Twitch login window) covers it and closes.
+app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')
+
 const logFile = path.join(app.getPath('userData'), 'updater.log')
 function logToFile(msg) {
   fs.appendFileSync(logFile, `${new Date().toISOString()} ${msg}\n`)
@@ -41,6 +45,14 @@ async function createWindow() {
   })
 
   mainWindow.setMenuBarVisibility(false)
+
+  // Self-heal instead of requiring a manual Ctrl+Shift+R
+  mainWindow.on('unresponsive', () => {
+    if (!mainWindow.isDestroyed()) mainWindow.webContents.reloadIgnoringCache()
+  })
+  mainWindow.webContents.on('render-process-gone', (_, details) => {
+    if (details.reason !== 'clean-exit' && !mainWindow.isDestroyed()) mainWindow.webContents.reloadIgnoringCache()
+  })
 
   if (process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])

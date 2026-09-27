@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld('api', {
     setTrim: (id, trimStart, trimEnd) => invoke('clips:setTrim', { id, trimStart, trimEnd }),
     setEnvelope: (id, envelope) => invoke('clips:setEnvelope', { id, envelope }),
     getVideoUrl: (id) => invoke('clips:getVideoUrl', { id }),
+    onRemoved: (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('clips:removed', h); return () => ipcRenderer.removeListener('clips:removed', h) },
     approve: (id) => invoke('clips:approve', { id }),
     deny: (id) => invoke('clips:deny', { id }),
     setStatus: (id, status) => invoke('clips:setStatus', { id, status }),

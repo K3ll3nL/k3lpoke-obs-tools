@@ -468,6 +468,11 @@ export default function Review() {
     return () => observer.disconnect()
   }, [displayCount, allClips.length])
 
+  useEffect(() => window.api.clips.onRemoved(({ ids }) => {
+    setAllClips(prev => prev.filter(c => !ids.includes(c.id)))
+    setSelectedIds(prev => { const next = new Set(prev); ids.forEach(id => next.delete(id)); return next })
+  }), [])
+
   async function loadClips() {
     setLoading(true)
     let r

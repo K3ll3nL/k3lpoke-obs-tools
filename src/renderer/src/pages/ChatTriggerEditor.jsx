@@ -4,7 +4,7 @@ import {
   Plus, X, ArrowLeft, Loader, Info, ChevronDown, ChevronUp,
   Bot, Megaphone, AlertTriangle, Dice6, Music, FileText, Eye,
   Percent, Clock, MessageSquare, Filter, Shuffle, ArrowUp, ArrowDown,
-  Radio, Terminal, Zap, Sun, Gift, Users,
+  Radio, Terminal, Zap, Sun, Gift, Users, Layers, List, Minus, Equal, SlidersHorizontal,
 } from 'lucide-react'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -41,6 +41,7 @@ function emptyConsideration(type) {
     case 'time_of_day':      return { ...base, mode: 'between', startTime: '18:00', endTime: '23:59', invert: false }
     case 'map_variable':      return { ...base, source: '', mappings: [{ id: uid(), from: '', to: '' }] }
     case 'transform_variable': return { ...base, source: '', op: 'uppercase', opArgs: {} }
+    case 'random_variable':   return { ...base, name: 'pick', pickFrom: 'manual', weighted: false, filePath: '', options: [{ id: uid(), value: '', weight: 1 }, { id: uid(), value: '', weight: 1 }] }
     case 'recent_redemption':  return { ...base, rewardId: '', minutes: 5, invert: false }
     case 'filter_users':      return { ...base, mode: 'blacklist', users: [], roles: [] }
     default:                  return base
@@ -60,8 +61,9 @@ function emptyTrigger() {
   const respId = uid()
   return {
     name: '', enabled: true, type: 'message',
-    command: '', commandParams: [], allowExtraText: true,
+    command: '', commandParams: [], allowExtraText: false,
     pattern: '',
+    firstWordsMode: 'first_message', firstWordsText: '', firstWordsIgnorePunct: false,
     conditions: [],
     responses: [{ id: respId, actions: [emptyAction()] }],
     routing: [],
@@ -157,14 +159,21 @@ const ANNOUNCEMENT_COLORS = [
 ]
 
 const BASE_VARS = [
-  { token: '{user}',         label: '@user' },
-  { token: '{display_name}', label: 'Name' },
+  { token: '{display_name}', label: 'Their name' },
   { token: '{message}',      label: 'Message' },
 ]
 
 const ADVANCED_VARS = [
   { token: '{channel}',   label: 'Channel name' },
   { token: '{followage}', label: "Sender's followage" },
+]
+
+// Looked up from Twitch for a "Twitch user" param, inserted as @{param.key}
+const USER_PROPS = [
+  { key: 'name',      icon: '👤', label: 'name' },
+  { key: 'game',      icon: '🎮', label: 'last game' },
+  { key: 'link',      icon: '🔗', label: 'link' },
+  { key: 'followage', icon: '⏳', label: 'followage' },
 ]
 
 const CONSIDERATION_META = {
@@ -177,8 +186,11 @@ const CONSIDERATION_META = {
   time_of_day:        { label: 'What time is it?',        icon: Sun,           color: 'amber' },
   map_variable:       { label: 'Map variable to a value', icon: Shuffle,       color: 'violet' },
   transform_variable: { label: 'Transform variable',      icon: Zap,           color: 'violet' },
+  random_variable:    { label: 'Random pick',             icon: Dice6,         color: 'violet' },
   recent_redemption:  { label: 'Recent redemption',       icon: Gift,          color: 'rose' },
 }
+
+const VAR_CONSID_TYPES = ['random_variable', 'map_variable', 'transform_variable']
 
 const CONSIDERATION_COLS = [
   [
@@ -288,15 +300,41 @@ function DurationInput({ value, onChange, preferenceKey }) {
   )
 }
 
-function PercentInput({ value, onChange }) {
+// Controlled numeric input that allows the field to be backspaced to empty
+// while typing, instead of a min/max clamp snapping a digit back in on every
+// keystroke. Clamping only happens once a value is actually committed, and on
+// blur an empty field reverts to the last valid value.
+function NumberInput({ value, onChange, min, max, suffix, className }) {
+  const [local, setLocal] = useState(String(value ?? ''))
+  useEffect(() => { setLocal(String(value ?? '')) }, [value])
+
+  const handleChange = (e) => {
+    const raw = e.target.value
+    setLocal(raw)
+    if (raw === '') return
+    let n = Number(raw)
+    if (Number.isNaN(n)) return
+    if (max !== undefined) n = Math.min(max, n)
+    if (min !== undefined) n = Math.max(min, n)
+    onChange(n)
+  }
+
+  const handleBlur = () => {
+    if (local === '') setLocal(String(value ?? min ?? ''))
+  }
+
   return (
     <div className="flex items-center gap-1.5">
-      <input type="number" min={1} max={100} value={value}
-        onChange={e => onChange(Math.min(100, Math.max(1, Number(e.target.value))))}
-        className="w-16 bg-twitch-dark border border-twitch-border rounded px-2 py-1.5 text-twitch-text text-sm focus:outline-none focus:border-teal-600" />
-      <span className="text-twitch-muted text-xs">%</span>
+      <input type="number" min={min} max={max} value={local}
+        onChange={handleChange} onBlur={handleBlur}
+        className={className ?? 'w-16 bg-twitch-dark border border-twitch-border rounded px-2 py-1.5 text-twitch-text text-sm focus:outline-none focus:border-teal-600'} />
+      {suffix && <span className="text-twitch-muted text-xs">{suffix}</span>}
     </div>
   )
+}
+
+function PercentInput({ value, onChange }) {
+  return <NumberInput value={value} onChange={onChange} min={1} max={100} suffix="%" />
 }
 
 // ── DatapillEditor (true inline contentEditable editor) ─────────────────────
@@ -345,6 +383,9 @@ function getPillLabel(content) {
   if (type === 'mindigits')  return `≥${parts[1] || '1'} numbers`
   if (type === 'msg_start')  return 'Message start'
   if (type === 'msg_end')    return 'Message end'
+  const userProp = content.match(/^(\w+)\.(\w+)$/)
+  const up = userProp && USER_PROPS.find(p => p.key === userProp[2])
+  if (up) return up.key === 'name' ? `${up.icon} ${userProp[1]}` : `${up.icon} ${userProp[1]}'s ${up.label}`
   return content
 }
 
@@ -1335,6 +1376,227 @@ function ObsSourceTriggerConfig({ trigger, patch }) {
   )
 }
 
+// ── RandomPickEditor ──────────────────────────────────────────────────────────
+
+const PICK_COLORS = ['#a78bfa', '#2dd4bf', '#fbbf24', '#f472b6', '#60a5fa', '#34d399', '#fb923c', '#e879f9']
+const RESERVED_VAR_NAMES = ['user', 'display_name', 'channel', 'message', 'followage', 'redeem_title', 'redeem_input', 'redeem_cost']
+
+function RandomPickEditor({ consideration: c, onChange }) {
+  const [fileInfo, setFileInfo] = useState(null)
+  const [rolled, setRolled] = useState(null)
+  const [rolling, setRolling] = useState(false)
+  const inputRefs = useRef({})
+  const focusId = useRef(null)
+  const rollTimer = useRef(null)
+  const fromFile = c.pickFrom === 'file'
+  const options = c.options ?? []
+
+  function p(k, v) { onChange({ ...c, [k]: v }) }
+
+  useEffect(() => {
+    if (!fromFile || !c.filePath) { setFileInfo(null); return }
+    if (!window.api.app.readTextLines) { setFileInfo({ error: 'Restart the app to finish updating.' }); return }
+    const why = msg => /No handler/i.test(msg ?? '') ? 'Restart the app to finish updating.' : (msg || true)
+    window.api.app.readTextLines(c.filePath)
+      .then(r => setFileInfo(r?.ok ? r.data : { error: why(r?.error) }))
+      .catch(err => setFileInfo({ error: why(err?.message) }))
+  }, [fromFile, c.filePath])
+
+  useEffect(() => { setRolled(null) }, [fromFile, c.filePath])
+  useEffect(() => () => clearInterval(rollTimer.current), [])
+  useEffect(() => {
+    const el = focusId.current && inputRefs.current[focusId.current]
+    if (el) { el.focus(); focusId.current = null }
+  })
+
+  const entries = fromFile ? (fileInfo?.lines ?? []).map((value, i) => ({ id: `f${i}`, value })) : options
+  const live = entries.map(o => ({
+    ...o,
+    w: !String(o.value ?? '').trim() ? 0 : (fromFile || !c.weighted) ? 1 : Math.max(0, Number(o.weight) || 0),
+  }))
+  const total = live.reduce((s, o) => s + o.w, 0)
+  const pct = w => total > 0 ? Math.round(w / total * 100) : 0
+  const color = i => PICK_COLORS[i % PICK_COLORS.length]
+  const nameBad = !c.name || RESERVED_VAR_NAMES.includes(c.name)
+
+  function pickIndex() {
+    let r = Math.random() * total
+    for (let i = 0; i < live.length; i++) { r -= live[i].w; if (r < 0) return i }
+    return live.length - 1
+  }
+  function roll() {
+    if (total <= 0) return
+    clearInterval(rollTimer.current)
+    setRolling(true)
+    let ticks = 0
+    rollTimer.current = setInterval(() => {
+      setRolled(pickIndex())
+      if (++ticks >= 8) { clearInterval(rollTimer.current); setRolling(false) }
+    }, 60)
+  }
+
+  function setOpt(id, patch) { p('options', options.map(o => o.id === id ? { ...o, ...patch } : o)) }
+  function insertAfter(id, values = ['']) {
+    const idx = options.findIndex(o => o.id === id)
+    const news = values.map(value => ({ id: uid(), value, weight: 1 }))
+    focusId.current = news[news.length - 1].id
+    p('options', [...options.slice(0, idx + 1), ...news, ...options.slice(idx + 1)])
+  }
+  function removeOpt(id, focusPrev) {
+    const idx = options.findIndex(o => o.id === id)
+    if (focusPrev && idx > 0) focusId.current = options[idx - 1].id
+    p('options', options.filter(o => o.id !== id))
+  }
+  function onPaste(e, o) {
+    const text = e.clipboardData.getData('text')
+    if (!/\r?\n/.test(text.trim())) return
+    e.preventDefault()
+    const vals = text.split(/\r?\n/).map(s => s.trim()).filter(Boolean)
+    const idx = options.findIndex(x => x.id === o.id)
+    const head = o.value.trim() ? [o] : [{ ...o, value: vals.shift() }]
+    const news = vals.map(value => ({ id: uid(), value, weight: 1 }))
+    p('options', [...options.slice(0, idx), ...head, ...news, ...options.slice(idx + 1)])
+  }
+  async function browse() {
+    const res = await window.api.app.openFile([{ name: 'Text files', extensions: ['txt', 'csv'] }, { name: 'All files', extensions: ['*'] }])
+    if (res?.ok && res.data) p('filePath', res.data)
+  }
+
+  const seg = (active, onClick, Icon, label) => (
+    <button key={label} onClick={onClick}
+      className={`flex items-center gap-1.5 text-xs px-2.5 py-1 rounded transition-colors ${active ? 'bg-violet-700 text-white' : 'text-twitch-muted hover:text-twitch-text'}`}>
+      <Icon size={11} /> {label}
+    </button>
+  )
+
+  return (
+    <div className="space-y-3">
+      {/* Name — shown the way it appears in a response */}
+      <div className="flex items-center gap-2">
+        <label className="text-twitch-muted text-xs w-20 shrink-0">Name</label>
+        <div className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 ${nameBad ? 'border-red-600/70 bg-red-900/20' : 'border-violet-700/60 bg-violet-900/20'}`}>
+          <Dice6 size={11} className={nameBad ? 'text-red-400' : 'text-violet-400'} />
+          <input value={c.name ?? ''} onChange={e => p('name', e.target.value.replace(/[^\w]/g, '_'))}
+            size={Math.max(4, (c.name ?? '').length)} spellCheck={false}
+            className="bg-transparent text-violet-100 text-xs font-medium focus:outline-none" />
+        </div>
+        {nameBad && <span className="text-red-400 text-[11px]">{c.name ? 'already a built-in name' : 'needs a name'}</span>}
+      </div>
+
+      {/* Source */}
+      <div className="flex items-center gap-2">
+        <label className="text-twitch-muted text-xs w-20 shrink-0">Pick from</label>
+        <div className="flex items-center gap-1 bg-twitch-surface rounded-lg p-0.5">
+          {seg(!fromFile, () => p('pickFrom', 'manual'), List, 'My list')}
+          {seg(fromFile, () => p('pickFrom', 'file'), FileText, 'A text file')}
+        </div>
+      </div>
+
+      {!fromFile && (
+        <div className="flex items-center gap-2">
+          <label className="text-twitch-muted text-xs w-20 shrink-0">Odds</label>
+          <div className="flex items-center gap-1 bg-twitch-surface rounded-lg p-0.5">
+            {seg(!c.weighted, () => p('weighted', false), Equal, 'Equal')}
+            {seg(!!c.weighted, () => p('weighted', true), SlidersHorizontal, 'Custom')}
+          </div>
+        </div>
+      )}
+
+      {/* Odds bar — each colour is one option, width = its chance */}
+      <div className="flex h-2.5 rounded-full overflow-hidden bg-twitch-surface">
+        {live.map((o, i) => o.w > 0 && (
+          <div key={o.id} title={`${o.value} — ${pct(o.w)}%`}
+            className="h-full transition-all duration-200 border-r border-twitch-dark last:border-r-0"
+            style={{ flexGrow: o.w, background: color(i), opacity: rolled === null || rolled === i ? 1 : 0.25 }} />
+        ))}
+      </div>
+
+      {!fromFile && (
+        <div className="space-y-1.5">
+          {options.map((o, i) => (
+            <div key={o.id}
+              className={`flex items-center gap-2 rounded-md px-1 -mx-1 transition-colors ${rolled === i ? 'bg-violet-900/30 ring-1 ring-violet-500/60' : ''}`}>
+              <span className="w-2.5 h-2.5 rounded-full shrink-0 transition-opacity"
+                style={{ background: color(i), opacity: live[i]?.w > 0 ? 1 : 0.25 }} />
+              <input ref={el => { inputRefs.current[o.id] = el }} value={o.value}
+                onChange={e => setOpt(o.id, { value: e.target.value })}
+                onPaste={e => onPaste(e, o)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') { e.preventDefault(); insertAfter(o.id) }
+                  if (e.key === 'Backspace' && !o.value && options.length > 1) { e.preventDefault(); removeOpt(o.id, true) }
+                }}
+                placeholder={i === 0 ? 'e.g. pizza' : i === 1 ? 'e.g. tacos' : 'another option'}
+                className="flex-1 min-w-0 text-xs bg-twitch-surface border border-twitch-border rounded px-2 py-1.5 text-twitch-text focus:outline-none focus:border-violet-600" />
+              {c.weighted && (
+                <div className="flex items-center rounded border border-twitch-border bg-twitch-surface shrink-0">
+                  <button onClick={() => setOpt(o.id, { weight: Math.max(0, (Number(o.weight) || 0) - 1) })}
+                    className="px-1.5 py-1 text-twitch-muted hover:text-violet-300"><Minus size={10} /></button>
+                  <span className="w-5 text-center text-xs tabular-nums text-twitch-text">{Number(o.weight) || 0}</span>
+                  <button onClick={() => setOpt(o.id, { weight: Math.min(99, (Number(o.weight) || 0) + 1) })}
+                    className="px-1.5 py-1 text-twitch-muted hover:text-violet-300"><Plus size={10} /></button>
+                </div>
+              )}
+              <span className="w-9 text-right text-xs tabular-nums text-twitch-muted shrink-0">{live[i]?.w > 0 ? `${pct(live[i].w)}%` : '—'}</span>
+              <button onClick={() => removeOpt(o.id)} disabled={options.length <= 1}
+                className="text-twitch-muted hover:text-red-400 disabled:opacity-20 disabled:hover:text-twitch-muted transition-colors shrink-0">
+                <X size={11} />
+              </button>
+            </div>
+          ))}
+          <button onClick={() => insertAfter(options[options.length - 1]?.id)}
+            className="text-violet-400 hover:text-violet-300 text-xs flex items-center gap-1 pt-0.5">
+            <Plus size={11} /> Add option
+          </button>
+        </div>
+      )}
+
+      {fromFile && (
+        <div className="space-y-2">
+          <button onClick={browse}
+            className={`w-full flex items-center gap-2 px-3 py-2.5 rounded-lg border text-xs transition-colors ${
+              c.filePath ? 'border-twitch-border bg-twitch-surface text-twitch-text hover:border-violet-600' : 'border-dashed border-violet-700/60 text-violet-300 hover:bg-violet-900/20'
+            }`}>
+            <FileText size={14} className="shrink-0 text-violet-400" />
+            <span className="truncate" title={c.filePath}>{c.filePath ? c.filePath.split(/[\\/]/).pop() : 'Choose a .txt file — one option per line'}</span>
+            {fileInfo?.count != null && <span className="ml-auto shrink-0 text-twitch-muted tabular-nums">{fileInfo.count} lines</span>}
+          </button>
+          {fileInfo?.error && (
+            <p className="text-red-400 text-xs">
+              Couldn't open that file{typeof fileInfo.error === 'string' ? ` — ${fileInfo.error}` : '.'}
+            </p>
+          )}
+          {fileInfo?.count === 0 && <p className="text-amber-400 text-xs">That file is empty.</p>}
+          {entries.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {entries.slice(0, 12).map((o, i) => (
+                <span key={o.id} className="inline-flex items-center gap-1.5 max-w-[12rem] px-2 py-0.5 rounded-full border border-twitch-border bg-twitch-surface text-[11px] text-twitch-text">
+                  <span className="w-2 h-2 rounded-full shrink-0" style={{ background: color(i) }} />
+                  <span className="truncate">{o.value}</span>
+                </span>
+              ))}
+              {fileInfo.count > 12 && <span className="px-2 py-0.5 text-[11px] text-twitch-muted">+{fileInfo.count - 12} more</span>}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Try it */}
+      <div className="flex items-center gap-2 pt-1 border-t border-twitch-border/50">
+        <button onClick={roll} disabled={total <= 0}
+          className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border border-violet-700/50 text-violet-300 hover:bg-violet-900/30 disabled:opacity-30 disabled:hover:bg-transparent transition-colors">
+          <Dice6 size={12} className={rolling ? 'animate-spin' : ''} /> Try it
+        </button>
+        {rolled !== null && live[rolled] && (
+          <span className="inline-flex items-center gap-1.5 text-xs text-twitch-text">
+            <span className="w-2 h-2 rounded-full" style={{ background: color(rolled) }} />
+            <span className={rolling ? 'opacity-50' : 'font-medium'}>{live[rolled].value}</span>
+          </span>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ── ConsiderationRow ──────────────────────────────────────────────────────────
 
 function ConsiderationRow({ consideration, onChange, onRemove, onMoveUp, onMoveDown, canMoveUp, canMoveDown, paramNames = [], paramTypes = {} }) {
@@ -1493,8 +1755,7 @@ function ConsiderationRow({ consideration, onChange, onRemove, onMoveUp, onMoveD
       {consideration.type === 'chat_activity' && (
         <div className="flex items-center gap-3">
           <label className="text-twitch-muted text-xs w-24 shrink-0">Min messages</label>
-          <input type="number" min={1} value={consideration.messageCount}
-            onChange={e => p('messageCount', Number(e.target.value))}
+          <NumberInput value={consideration.messageCount} onChange={v => p('messageCount', v)} min={1}
             className="w-16 bg-twitch-surface border border-twitch-border rounded px-2 py-1.5 text-twitch-text text-sm focus:outline-none focus:border-teal-600" />
           <span className="text-twitch-muted text-xs text-right flex-1">messages since last trigger</span>
         </div>
@@ -1635,7 +1896,7 @@ function ConsiderationRow({ consideration, onChange, onRemove, onMoveUp, onMoveD
           </div>
           <div className="flex items-center gap-3">
             <label className="text-twitch-muted text-xs w-24 shrink-0">Window</label>
-            <input type="number" min={1} value={consideration.minutes ?? 5} onChange={e => p('minutes', Number(e.target.value))}
+            <NumberInput value={consideration.minutes ?? 5} onChange={v => p('minutes', v)} min={1}
               className="w-16 bg-twitch-surface border border-twitch-border rounded px-2 py-1.5 text-twitch-text text-xs focus:outline-none focus:border-teal-600" />
             <span className="text-twitch-muted text-xs">minutes</span>
           </div>
@@ -1691,6 +1952,10 @@ function ConsiderationRow({ consideration, onChange, onRemove, onMoveUp, onMoveD
         </div>
       )}
 
+      {consideration.type === 'random_variable' && (
+        <RandomPickEditor consideration={consideration} onChange={onChange} />
+      )}
+
       {consideration.type === 'transform_variable' && (() => {
         const isNumber = paramTypes[consideration.source ?? ''] === 'number'
         const opMeta = findTransformOp(consideration.op, isNumber ? 'number' : 'text') ?? (isNumber ? TRANSFORM_OPS.number[0] : TRANSFORM_OPS.text[0])
@@ -1739,14 +2004,18 @@ function ConsiderationRow({ consideration, onChange, onRemove, onMoveUp, onMoveD
 
 // ── ActionRow ─────────────────────────────────────────────────────────────────
 
-function ActionRow({ action, onChange, onRemove, canRemove, hasBot, params, pattern }) {
+function ActionRow({ action, onChange, onRemove, canRemove, hasBot, params, userParams = [], pattern }) {
   const [advOpen, setAdvOpen] = useState(false)
   const [obsSources, setObsSources] = useState([])
   const [obsScenes, setObsScenes] = useState([])
   const [audioDevices, setAudioDevices] = useState([])
 
   function patch(k, v) { onChange({ ...action, [k]: v }) }
-  function insertVar(varName) { patch('template', (action.template ?? '') + `@{${varName}}`) }
+  const templateEditorRef = useRef(null)
+  function insertVar(varName) {
+    if (templateEditorRef.current) templateEditorRef.current.insertAtCursor(`@{${varName}}`)
+    else patch('template', (action.template ?? '') + `@{${varName}}`)
+  }
 
   // Extract named variables from the pattern with their source type
   const { patternVars, varColors } = React.useMemo(() => {
@@ -1827,7 +2096,7 @@ function ActionRow({ action, onChange, onRemove, canRemove, hasBot, params, patt
       {/* Header */}
       <div className={`flex items-center justify-between px-3 py-2 border-b border-twitch-border ${isAnnouncement ? 'bg-teal-900/20' : 'bg-twitch-surface'}`}>
         <div className="flex items-center gap-1 bg-twitch-dark rounded-lg p-0.5 flex-wrap">
-          {ACTION_TYPES.map(t => (
+          {ACTION_TYPES.filter(t => t.value !== 'random_line' || isLine).map(t => (
             <button key={t.value} onClick={() => {
               patch('type', t.value)
               if (t.value === 'obs_set_source' || t.value === 'play_media') loadObsData()
@@ -1895,7 +2164,7 @@ function ActionRow({ action, onChange, onRemove, canRemove, hasBot, params, patt
         {/* Chat / Announcement body */}
         {isChat && (
           <>
-            <DatapillEditor mode="response" value={action.template ?? ''} onChange={v => patch('template', v)} varColors={varColors} />
+            <DatapillEditor ref={templateEditorRef} mode="response" value={action.template ?? ''} onChange={v => patch('template', v)} varColors={varColors} />
             <div className="space-y-1.5">
               <div className="flex flex-wrap gap-1 items-center">
                 {BASE_VARS.map(v => (
@@ -1906,6 +2175,20 @@ function ActionRow({ action, onChange, onRemove, canRemove, hasBot, params, patt
                 ))}
                 {patternVars.map(p => {
                   const c = PILL_COLORS[varColors[p] ?? 'violet']
+                  if (userParams.includes(p)) return (
+                    <div key={p} className="flex items-stretch rounded border border-violet-700/60 overflow-hidden text-xs">
+                      <button type="button" onClick={() => insertVar(`${p}.name`)}
+                        className="px-2 py-0.5 font-mono bg-violet-900/50 text-violet-300 hover:bg-violet-900/70 transition-colors">
+                        👤 {p}
+                      </button>
+                      {USER_PROPS.filter(u => u.key !== 'name').map(u => (
+                        <button key={u.key} type="button" onClick={() => insertVar(`${p}.${u.key}`)}
+                          className="px-2 py-0.5 border-l border-violet-700/60 bg-violet-900/20 text-violet-400 hover:bg-violet-900/50 transition-colors">
+                          {u.icon} {u.label}
+                        </button>
+                      ))}
+                    </div>
+                  )
                   return (
                     <button key={p} type="button" onClick={() => insertVar(p)}
                       className={`text-xs px-2 py-0.5 rounded font-mono transition-colors ${c} border`}>
@@ -2111,7 +2394,7 @@ function ConditionEditor({ condition, onChange }) {
         <div className="space-y-1">
           <label className="text-twitch-muted text-xs">Relative weight</label>
           <div className="flex items-center gap-2">
-            <input type="number" min={1} value={condition.weight ?? 1} onChange={e => p('weight', Number(e.target.value))}
+            <NumberInput value={condition.weight ?? 1} onChange={v => p('weight', v)} min={1}
               className="w-16 bg-twitch-surface border border-twitch-border rounded px-2 py-1.5 text-twitch-text text-sm focus:outline-none focus:border-teal-600" />
             <span className="text-twitch-muted text-xs">Higher = fires more often relative to other random groups</span>
           </div>
@@ -2320,7 +2603,7 @@ function ActivationCard({ activation, onChange }) {
 
 // ── ResponseGroup ─────────────────────────────────────────────────────────────
 
-function ResponseGroup({ group, onChange, onRemove, canRemove, hasBot, params, pattern, groupIndex, isMultiResponse }) {
+function ResponseGroup({ group, onChange, onRemove, canRemove, hasBot, params, userParams, pattern, groupIndex, isMultiResponse }) {
   function patchGroup(k, v) { onChange({ ...group, [k]: v }) }
   function addAction() { patchGroup('actions', [...group.actions, emptyAction()]) }
   function updateAction(aid, updated) { patchGroup('actions', group.actions.map(a => a.id === aid ? updated : a)) }
@@ -2349,7 +2632,7 @@ function ResponseGroup({ group, onChange, onRemove, canRemove, hasBot, params, p
               onChange={updated => updateAction(action.id, updated)}
               onRemove={() => removeAction(action.id)}
               canRemove={group.actions.length > 1}
-              hasBot={hasBot} params={params} pattern={pattern} />
+              hasBot={hasBot} params={params} userParams={userParams} pattern={pattern} />
           ))}
         </div>
         <button onClick={addAction} className="flex items-center gap-1.5 text-teal-500 hover:text-teal-400 text-xs transition-colors">
@@ -2378,22 +2661,45 @@ function ParamRow({ param, onChange, onRemove }) {
         onChange={e => patch('name', e.target.value.replace(/\s/g, '_').replace(/[^a-zA-Z0-9_]/g, ''))}
         placeholder="param_name"
         className="flex-1 min-w-24 font-mono bg-twitch-surface border border-twitch-border rounded px-2 py-1 text-twitch-text text-xs focus:outline-none focus:border-teal-600" />
-      <select value={param.paramType ?? 'text'} onChange={e => patch('paramType', e.target.value)}
-        className="bg-twitch-surface border border-twitch-border rounded px-1.5 py-1 text-twitch-muted text-xs focus:outline-none focus:border-teal-600">
-        <option value="text">Text</option>
-        <option value="number">Number</option>
-      </select>
-      {param.optional && (
-        <input value={param.defaultValue ?? ''} onChange={e => patch('defaultValue', e.target.value)}
-          placeholder="Default (e.g. {user})"
-          className="flex-1 min-w-28 font-mono bg-twitch-surface border border-twitch-border rounded px-2 py-1 text-twitch-text text-xs focus:outline-none focus:border-teal-600" />
-      )}
+      <div className="flex shrink-0 rounded border border-twitch-border overflow-hidden text-xs">
+        {[['text', '📝 Any text'], ['number', '🔢 Numbers only'], ['user', '👤 Twitch user']].map(([v, l]) => (
+          <button key={v} onClick={() => patch('paramType', v)}
+            className={`px-2 py-1 transition-colors ${
+              (param.paramType ?? 'text') === v ? 'bg-teal-900/40 text-teal-400' : 'text-twitch-muted hover:text-twitch-text'
+            }`}>{l}</button>
+        ))}
+      </div>
       <button onClick={onRemove} className="text-twitch-muted hover:text-red-400 transition-colors shrink-0">
         <X size={12} />
       </button>
+      {param.optional && (
+        <div className="basis-full flex items-center gap-2 flex-wrap pl-1">
+          <span className="text-twitch-muted text-xs shrink-0">If it's missing, use</span>
+          {DEFAULT_CHIPS.map(c => {
+            const on = param.defaultValue === c.value
+            return (
+              <button key={c.value} onClick={() => patch('defaultValue', on ? '' : c.value)}
+                className={`flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border transition-colors ${
+                  on ? 'bg-teal-900/40 border-teal-600 text-teal-400' : 'border-twitch-border text-twitch-muted hover:text-twitch-text'
+                }`}>
+                <c.icon size={11} /> {c.label}
+              </button>
+            )
+          })}
+          <input value={DEFAULT_CHIPS.some(c => c.value === param.defaultValue) ? '' : (param.defaultValue ?? '')}
+            onChange={e => patch('defaultValue', e.target.value)}
+            placeholder="or your own words, e.g. everyone"
+            className="flex-1 min-w-28 bg-twitch-surface border border-twitch-border rounded px-2 py-1 text-twitch-text text-xs focus:outline-none focus:border-teal-600" />
+        </div>
+      )}
     </div>
   )
 }
+
+const DEFAULT_CHIPS = [
+  { value: '{display_name}', label: 'Their name', icon: Users },
+  { value: '{channel}', label: 'Your channel', icon: Radio },
+]
 
 // ── Main Editor ───────────────────────────────────────────────────────────────
 
@@ -2409,7 +2715,16 @@ export default function ChatTriggerEditor() {
   const [testText, setTestText] = useState('')
   const [testUsername, setTestUsername] = useState('')
   const [testResults, setTestResults] = useState(null)
+  const [testOverlaps, setTestOverlaps] = useState([])
   const [toast, setToast] = useState(null)
+  const nameRef = useRef(null)
+  const [nudged, setNudged] = useState(false)
+
+  useEffect(() => {
+    if (!testText.trim()) { setTestResults(null); setTestOverlaps([]); return }
+    const handle = setTimeout(runTest, 250)
+    return () => clearTimeout(handle)
+  }, [testText, testUsername, trigger])
   const [addConsidMenu, setAddConsidMenu] = useState(false)
   const [addVarMenu, setAddVarMenu] = useState(false)
   const [addConditionMenu, setAddConditionMenu] = useState(false)
@@ -2510,7 +2825,14 @@ export default function ChatTriggerEditor() {
 
   // considerations
   function addConsideration(type) {
-    patch('considerations', [...(trigger.considerations ?? []), emptyConsideration(type)])
+    const c = emptyConsideration(type)
+    if (type === 'random_variable') {
+      const taken = new Set((trigger.considerations ?? []).map(x => x.name).filter(Boolean))
+      let n = 1
+      while (taken.has(n === 1 ? 'pick' : `pick${n}`)) n++
+      c.name = n === 1 ? 'pick' : `pick${n}`
+    }
+    patch('considerations', [...(trigger.considerations ?? []), c])
     setAddConsidMenu(false)
   }
   function updateConsideration(cid, updated) {
@@ -2595,8 +2917,25 @@ export default function ChatTriggerEditor() {
     }
   }
 
+  // Add new save requirements here; the first unmet one gets scrolled to and nudged.
+  const blockers = [{ ref: nameRef, blocked: !trigger.name.trim() }]
+  const firstBlocker = blockers.find(b => b.blocked)
+
+  function nudgeBlocker() {
+    const el = firstBlocker?.ref.current
+    if (!el) return
+    setNudged(true)
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    el.focus({ preventScroll: true })
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    setTimeout(() => el.animate(
+      [0, -5, 5, -4, 3, -1, 0].map(x => ({ transform: `translateX(${x}px)` })),
+      { duration: 420, easing: 'ease-in-out' }
+    ), 250)
+  }
+
   async function handleSave() {
-    if (!trigger.name.trim()) return
+    if (firstBlocker) { nudgeBlocker(); return }
     setSaving(true)
     const toSave = {
       ...trigger,
@@ -2609,6 +2948,10 @@ export default function ChatTriggerEditor() {
       intervalUnit: trigger.type === 'timer' ? (trigger.intervalUnit ?? 'minutes') : undefined,
       streamStartDelay: trigger.type === 'timer' ? (trigger.streamStartDelay ?? 15) : undefined,
       onlyWhenLive: trigger.type === 'timer' ? (trigger.onlyWhenLive ?? true) : undefined,
+      // First Words defaults
+      firstWordsMode: trigger.type === 'first_words' ? (trigger.firstWordsMode ?? 'first_message') : undefined,
+      firstWordsText: trigger.type === 'first_words' ? (trigger.firstWordsText ?? '') : undefined,
+      firstWordsIgnorePunct: trigger.type === 'first_words' ? (trigger.firstWordsIgnorePunct ?? false) : undefined,
     }
     const res = isNew
       ? await window.api.chatTriggers.create(toSave)
@@ -2618,12 +2961,17 @@ export default function ChatTriggerEditor() {
   }
 
   async function runTest() {
-    const res = await window.api.chatTriggers.testTrigger(trigger, testText, testUsername || 'testuser')
+    const [res, all] = await Promise.all([
+      window.api.chatTriggers.testTrigger(trigger, testText, testUsername || 'testuser'),
+      window.api.chatTriggers.testMessage(testText, testUsername || 'testuser'),
+    ])
     if (res.ok) setTestResults(res.data)
+    if (all.ok) setTestOverlaps(all.data.filter(t => t.matches && t.enabled && t.id !== trigger.id))
   }
 
   const commandParamNames = (trigger.commandParams ?? []).map(p => p.name).filter(Boolean)
-  const allParamNames = [...new Set([...commandParamNames, ...getPatternParamNames(trigger.pattern ?? '')])]
+  const randomVarNames = (trigger.considerations ?? []).filter(c => c.type === 'random_variable' && c.name).map(c => c.name)
+  const allParamNames = [...new Set([...commandParamNames, ...getPatternParamNames(trigger.pattern ?? ''), ...randomVarNames])]
   const allParamTypes = {
     ...Object.fromEntries((trigger.commandParams ?? []).filter(p => p.name).map(p => [p.name, p.paramType ?? 'text'])),
     ...getPatternParamTypes(trigger.pattern ?? ''),
@@ -2655,9 +3003,9 @@ export default function ChatTriggerEditor() {
 
         {/* Name + enabled */}
         <div className="flex items-center gap-3">
-          <input value={trigger.name} onChange={e => patch('name', e.target.value)}
-            placeholder="Trigger name..."
-            className="flex-1 bg-twitch-surface border border-twitch-border rounded-lg px-3 py-2 text-twitch-text text-sm focus:outline-none focus:border-teal-600" />
+          <input ref={nameRef} value={trigger.name} onChange={e => { patch('name', e.target.value); if (e.target.value.trim()) setNudged(false) }}
+            placeholder={nudged && !trigger.name.trim() ? 'Name this trigger to save it' : 'Trigger name...'}
+            className={`flex-1 bg-twitch-surface border border-twitch-border rounded-lg px-3 py-2 text-twitch-text text-sm focus:outline-none focus:border-teal-600 ${nudged && !trigger.name.trim() ? 'blocker-outline' : ''}`} />
           <label className="flex items-center gap-2 cursor-pointer shrink-0">
             <Toggle on={trigger.enabled} onChange={v => patch('enabled', v)} size="lg" />
             <span className="text-twitch-muted text-xs">{trigger.enabled ? 'Enabled' : 'Disabled'}</span>
@@ -2669,6 +3017,7 @@ export default function ChatTriggerEditor() {
           {[
             { value: 'message',       label: '# Chat message' },
             { value: 'command',       label: '! Command' },
+            { value: 'first_words',   label: '👋 First Words' },
             { value: 'channel_point', label: '⭐ Twitch Redeem' },
             { value: 'obs_source',    label: '📡 OBS Source' },
             { value: 'timer',         label: '⏱ Timed Event' },
@@ -2697,7 +3046,6 @@ export default function ChatTriggerEditor() {
 
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <label className="text-twitch-muted text-xs">Parameters</label>
                 <label className="text-twitch-muted text-xs">Parameters</label>
                 <button onClick={addParam} className="text-teal-500 hover:text-teal-400 text-xs flex items-center gap-1">
                   <Plus size={11} /> Add parameter
@@ -2731,6 +3079,44 @@ export default function ChatTriggerEditor() {
               <Info size={11} className="mt-0.5 shrink-0" />
               Use <code className="font-mono text-teal-400">{'{param_name}'}</code> in your response to insert a parameter's value.
             </p>
+          </Card>
+        )}
+
+        {/* First Words config */}
+        {trigger.type === 'first_words' && (
+          <Card>
+            <div className="flex gap-1">
+              {[
+                { value: 'first_message', label: "Chatter's first message" },
+                { value: 'starts_with',   label: 'Message starts with...' },
+              ].map(opt => (
+                <button key={opt.value} onClick={() => patch('firstWordsMode', opt.value)}
+                  className={`text-xs px-3 py-1.5 rounded border transition-colors ${
+                    (trigger.firstWordsMode ?? 'first_message') === opt.value
+                      ? 'bg-teal-900/30 border-teal-600 text-teal-400'
+                      : 'border-twitch-border text-twitch-muted hover:border-twitch-muted'
+                  }`}>
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+
+            {(trigger.firstWordsMode ?? 'first_message') === 'first_message' ? (
+              <p className="text-twitch-muted text-xs flex items-start gap-1.5">
+                <Info size={11} className="mt-0.5 shrink-0" />
+                Fires once per chatter, the first time they type anything this session.
+              </p>
+            ) : (
+              <>
+                <input value={trigger.firstWordsText ?? ''} onChange={e => patch('firstWordsText', e.target.value)}
+                  placeholder="good morning"
+                  className="w-full bg-twitch-dark border border-twitch-border rounded-lg px-3 py-2 text-twitch-text text-sm focus:outline-none focus:border-teal-600" />
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <Toggle on={trigger.firstWordsIgnorePunct} onChange={v => patch('firstWordsIgnorePunct', v)} size="md" />
+                  <span className="text-twitch-muted text-xs">Ignore punctuation</span>
+                </label>
+              </>
+            )}
           </Card>
         )}
 
@@ -2785,8 +3171,7 @@ export default function ChatTriggerEditor() {
               {(trigger.timerMode ?? 'interval') === 'interval' && (
                 <div className="flex items-center gap-3">
                   <label className="text-twitch-muted text-xs w-24 shrink-0">Fire every</label>
-                  <input type="number" min={1} value={trigger.interval ?? 15}
-                    onChange={e => patch('interval', Math.max(1, Number(e.target.value)))}
+                  <NumberInput value={trigger.interval ?? 15} onChange={v => patch('interval', v)} min={1}
                     className="w-20 bg-twitch-dark border border-twitch-border rounded px-2 py-1.5 text-twitch-text text-sm focus:outline-none focus:border-teal-600" />
                   <div className="flex gap-1">
                     {['minutes','hours'].map(unit => (
@@ -2807,8 +3192,7 @@ export default function ChatTriggerEditor() {
               {(trigger.timerMode ?? 'interval') === 'stream_start' && (
                 <div className="flex items-center gap-3">
                   <label className="text-twitch-muted text-xs shrink-0">Fire</label>
-                  <input type="number" min={0} value={trigger.streamStartDelay ?? 15}
-                    onChange={e => patch('streamStartDelay', Math.max(0, Number(e.target.value)))}
+                  <NumberInput value={trigger.streamStartDelay ?? 15} onChange={v => patch('streamStartDelay', v)} min={0}
                     className="w-20 bg-twitch-dark border border-twitch-border rounded px-2 py-1.5 text-twitch-text text-sm focus:outline-none focus:border-teal-600" />
                   <span className="text-twitch-muted text-xs">minutes after stream goes live</span>
                 </div>
@@ -2829,7 +3213,7 @@ export default function ChatTriggerEditor() {
           <div className="flex items-center justify-between">
             <div>
               <h2 className="text-twitch-text text-sm font-medium">Special Considerations</h2>
-              {(trigger.considerations ?? []).filter(c => c.type !== 'map_variable' && c.type !== 'transform_variable').length > 1 && (
+              {(trigger.considerations ?? []).filter(c => !VAR_CONSID_TYPES.includes(c.type)).length > 1 && (
                 <p className="text-twitch-muted text-xs mt-1">Executed in order from top to bottom</p>
               )}
             </div>
@@ -2876,7 +3260,7 @@ export default function ChatTriggerEditor() {
             </div>
           </div>
           <div className="space-y-3">
-            {(trigger.considerations ?? []).filter(c => c.type !== 'map_variable' && c.type !== 'transform_variable').map((c) => {
+            {(trigger.considerations ?? []).filter(c => !VAR_CONSID_TYPES.includes(c.type)).map((c) => {
               const allConsids = trigger.considerations ?? []
               const globalIdx = allConsids.indexOf(c)
               return (
@@ -2894,9 +3278,9 @@ export default function ChatTriggerEditor() {
           </div>
         </section>
 
-        {/* Variable Considerations — only when pattern/params define variables */}
-        {allParamNames.length > 0 && (() => {
-          const varConsids = (trigger.considerations ?? []).filter(c => c.type === 'map_variable' || c.type === 'transform_variable')
+        {/* Variable Considerations */}
+        {(() => {
+          const varConsids = (trigger.considerations ?? []).filter(c => VAR_CONSID_TYPES.includes(c.type))
           return (
             <section className="space-y-3 p-4 bg-twitch-surface border border-twitch-border rounded-xl">
               <div className="flex items-center justify-between">
@@ -2909,11 +3293,12 @@ export default function ChatTriggerEditor() {
                     </button>
                     {addVarMenu && (
                       <div className="absolute right-0 top-full mt-2 bg-twitch-dark border border-twitch-border rounded-xl shadow-xl z-20 p-2 w-52">
-                        {[['map_variable', Shuffle, 'Map variable'], ['transform_variable', Zap, 'Transform variable']].map(([type, Icon, label]) => {
+                        {[['random_variable', Dice6, 'Random pick'], ['map_variable', Shuffle, 'Map variable'], ['transform_variable', Zap, 'Transform variable']].map(([type, Icon, label]) => {
                           const colors = COLOR_CLASSES.violet
+                          const off = type !== 'random_variable' && allParamNames.length === 0
                           return (
-                            <button key={type} onClick={() => addConsideration(type)}
-                              className="flex items-center gap-2 w-full text-left text-xs px-2 py-1.5 rounded-lg hover:bg-twitch-surface text-twitch-text transition-colors">
+                            <button key={type} onClick={() => { addConsideration(type); setAddVarMenu(false) }} disabled={off}
+                              className={`flex items-center gap-2 w-full text-left text-xs px-2 py-1.5 rounded-lg text-twitch-text transition-colors ${off ? 'opacity-40 cursor-not-allowed' : 'hover:bg-twitch-surface'}`}>
                               <span className={`flex items-center justify-center w-5 h-5 rounded shrink-0 ${colors.chip}`}>
                                 <Icon size={10} />
                               </span>
@@ -2927,13 +3312,17 @@ export default function ChatTriggerEditor() {
                 )}
               </div>
               {varConsids.length === 0 ? (
-                <div className="grid grid-cols-2 gap-3 pt-1">
+                <div className="grid grid-cols-3 gap-3 pt-1">
                   {[
+                    { type: 'random_variable', icon: Dice6, title: 'Random pick', desc: 'Pick one thing at random from a list or a file.' },
                     { type: 'map_variable', icon: Shuffle, title: 'Map variable', desc: 'Replace one captured value with another — great for translating user input.' },
                     { type: 'transform_variable', icon: Zap, title: 'Transform variable', desc: 'Reformat a value — uppercase, lowercase, trim spaces, and more.' },
-                  ].map(({ type, icon: Icon, title, desc }) => (
-                    <button key={type} onClick={() => addConsideration(type)}
-                      className="flex flex-col gap-2 p-3 rounded-lg border border-twitch-border hover:border-violet-600/40 hover:bg-violet-900/10 text-left transition-colors">
+                  ].map(({ type, icon: Icon, title, desc }) => {
+                    const off = type !== 'random_variable' && allParamNames.length === 0
+                    return (
+                    <button key={type} onClick={() => addConsideration(type)} disabled={off}
+                      title={off ? 'Needs a captured value in the pattern first' : undefined}
+                      className={`flex flex-col gap-2 p-3 rounded-lg border border-twitch-border text-left transition-colors ${off ? 'opacity-40 cursor-not-allowed' : 'hover:border-violet-600/40 hover:bg-violet-900/10'}`}>
                       <span className="flex items-center gap-2">
                         <span className="flex items-center justify-center w-5 h-5 rounded bg-violet-900/20 border border-violet-700/50 text-violet-400 shrink-0">
                           <Icon size={10} />
@@ -2942,7 +3331,8 @@ export default function ChatTriggerEditor() {
                       </span>
                       <span className="text-twitch-muted text-[11px] leading-relaxed">{desc}</span>
                     </button>
-                  ))}
+                    )
+                  })}
                 </div>
               ) : (
                 <div className="space-y-3">
@@ -3216,7 +3606,8 @@ export default function ChatTriggerEditor() {
                 onRemove={() => removeResponse(response.id)}
                 canRemove={(trigger.responses ?? []).length > 1}
                 hasBot={hasBot}
-                params={trigger.type === 'channel_point' ? ['redeem_title', 'redeem_input', 'redeem_cost'] : commandParamNames}
+                params={[...(trigger.type === 'channel_point' ? ['redeem_title', 'redeem_input', 'redeem_cost'] : commandParamNames), ...randomVarNames]}
+                userParams={trigger.type === 'channel_point' ? [] : (trigger.commandParams ?? []).filter(p => p.name && p.paramType === 'user').map(p => p.name)}
                 pattern={trigger.type === 'channel_point' ? '' : trigger.pattern}
                 isMultiResponse={(trigger.responses ?? []).length > 1} />
             ))}
@@ -3249,14 +3640,13 @@ export default function ChatTriggerEditor() {
         <ActivationCard activation={trigger.activation} onChange={v => patch('activation', v)} />
 
         {/* Test panel */}
-        {(trigger.type === 'message' || trigger.type === 'command') && (
+        {(trigger.type === 'message' || trigger.type === 'command' || trigger.type === 'first_words') && (
           <Card title="Test">
             <div className="flex items-center gap-2">
               <input value={testText} onChange={e => setTestText(e.target.value)} placeholder="Test message..."
                 className="flex-1 bg-twitch-dark border border-twitch-border rounded px-2 py-1.5 text-twitch-text text-sm focus:outline-none focus:border-teal-600" />
               <input value={testUsername} onChange={e => setTestUsername(e.target.value)} placeholder="username"
                 className="w-28 bg-twitch-dark border border-twitch-border rounded px-2 py-1.5 text-twitch-muted text-sm focus:outline-none focus:border-teal-600" />
-              <button onClick={runTest} className="bg-teal-700 hover:bg-teal-600 text-white text-sm px-3 py-1.5 rounded transition-colors">Test</button>
             </div>
             {testResults && (
               <div className="space-y-1 mt-1">
@@ -3282,6 +3672,21 @@ export default function ChatTriggerEditor() {
                 )}
               </div>
             )}
+            {testText.trim() && testOverlaps.length > 0 && (() => {
+              const clash = !!testResults?.matches
+              return (
+                <div className={`flex flex-wrap items-center gap-1 mt-1 text-xs px-2 py-1.5 rounded ${clash ? 'bg-amber-900/20 text-amber-400' : 'bg-twitch-dark text-twitch-muted'}`}>
+                  <Layers size={12} className="shrink-0" />
+                  <span>{clash ? 'Also fires' : 'Fires instead'}</span>
+                  {testOverlaps.map(t => (
+                    <span key={t.id} className={`flex items-center gap-1 px-1.5 py-0.5 rounded border ${clash ? 'bg-amber-900/30 border-amber-700/50 text-amber-300' : 'border-twitch-border text-twitch-text'}`}>
+                      {t.type === 'command' ? <Terminal size={10} /> : <MessageSquare size={10} />}
+                      {t.name || '(unnamed)'}
+                    </span>
+                  ))}
+                </div>
+              )
+            })()}
           </Card>
         )}
 
@@ -3304,8 +3709,8 @@ export default function ChatTriggerEditor() {
 
         {/* Save / Cancel */}
         <div className="flex items-center gap-3 pt-2 pb-6">
-          <button onClick={handleSave} disabled={saving || !trigger.name.trim()}
-            className="flex items-center gap-2 bg-teal-600 hover:bg-teal-500 disabled:opacity-50 text-white text-sm px-5 py-2 rounded-lg transition-colors">
+          <button onClick={handleSave} disabled={saving} aria-disabled={!!firstBlocker}
+            className={`flex items-center gap-2 bg-teal-600 disabled:opacity-50 text-white text-sm px-5 py-2 rounded-lg transition-colors ${firstBlocker ? 'opacity-50 cursor-not-allowed' : 'hover:bg-teal-500'}`}>
             {saving && <Loader size={13} className="animate-spin" />}
             {saving ? 'Saving...' : isNew ? 'Create trigger' : 'Save changes'}
           </button>
