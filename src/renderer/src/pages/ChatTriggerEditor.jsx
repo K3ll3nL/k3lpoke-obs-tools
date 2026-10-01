@@ -159,13 +159,7 @@ const ANNOUNCEMENT_COLORS = [
 ]
 
 const BASE_VARS = [
-  { token: '{display_name}', label: 'Their name' },
   { token: '{message}',      label: 'Message' },
-]
-
-const ADVANCED_VARS = [
-  { token: '{channel}',   label: 'Channel name' },
-  { token: '{followage}', label: "Sender's followage" },
 ]
 
 // Looked up from Twitch for a "Twitch user" param, inserted as @{param.key}
@@ -175,6 +169,33 @@ const USER_PROPS = [
   { key: 'link',      icon: '🔗', label: 'link' },
   { key: 'followage', icon: '⏳', label: 'followage' },
 ]
+
+// Implicit Twitch users available in every command, inserted as @{sender.name} etc.
+const USER_SOURCES = {
+  sender:      { icon: '💬', label: 'Sender' },
+  streamer:    { icon: '📺', label: 'Streamer' },
+}
+
+// One Twitch user as a pill with its lookup children. `name` is what tokens use.
+function UserPillGroup({ name, icon = '👤', label = name, linkedTo, onInsert }) {
+  return (
+    <div className="flex items-stretch rounded border border-violet-700/60 overflow-hidden text-xs">
+      <button type="button" onClick={() => onInsert(`${name}.name`)}
+        className="flex items-center gap-1 pl-1 pr-2 py-0.5 font-mono bg-violet-900/50 text-violet-300 hover:bg-violet-900/70 transition-colors">
+        {linkedTo ? <>{USER_SOURCES[linkedTo].icon} {USER_SOURCES[linkedTo].label}</> : <>{icon} {label}</>}
+        {linkedTo && (
+          <span className="ml-0.5 px-1 rounded bg-violet-950/70 text-violet-400">or {name}</span>
+        )}
+      </button>
+      {USER_PROPS.filter(u => u.key !== 'name').map(u => (
+        <button key={u.key} type="button" onClick={() => onInsert(`${name}.${u.key}`)}
+          className="pl-1 pr-2 py-0.5 border-l border-violet-700/60 bg-violet-900/20 text-violet-400 hover:bg-violet-900/50 transition-colors">
+          {u.icon} {u.label}
+        </button>
+      ))}
+    </div>
+  )
+}
 
 const CONSIDERATION_META = {
   chance:             { label: 'Only run sometimes',     icon: Percent,       color: 'amber' },
@@ -385,7 +406,11 @@ function getPillLabel(content) {
   if (type === 'msg_end')    return 'Message end'
   const userProp = content.match(/^(\w+)\.(\w+)$/)
   const up = userProp && USER_PROPS.find(p => p.key === userProp[2])
-  if (up) return up.key === 'name' ? `${up.icon} ${userProp[1]}` : `${up.icon} ${userProp[1]}'s ${up.label}`
+  if (up) {
+    const src = USER_SOURCES[userProp[1]]
+    const who = src ? src.label : userProp[1]
+    return up.key === 'name' ? `${src?.icon ?? up.icon} ${who}` : `${up.icon} ${who}'s ${up.label}`
+  }
   return content
 }
 
@@ -403,7 +428,7 @@ function makePillNode(content, colorOverride, onClickFn) {
   )
   const pill = document.createElement('button')
   pill.type = 'button'
-  pill.className = `datapill inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-medium ${PILL_COLORS[colorKey]} whitespace-nowrap cursor-pointer transition-colors`
+  pill.className = `datapill inline-flex items-center gap-1 ${/^\p{Extended_Pictographic}/u.test(getPillLabel(content)) ? 'pl-1 pr-2' : 'px-2'} py-1 rounded text-xs font-medium ${PILL_COLORS[colorKey]} whitespace-nowrap cursor-pointer transition-colors`
   pill.dataset.content = content
   pill.contentEditable = 'false'
   pill.textContent = getPillLabel(content)
@@ -1379,7 +1404,7 @@ function ObsSourceTriggerConfig({ trigger, patch }) {
 // ── RandomPickEditor ──────────────────────────────────────────────────────────
 
 const PICK_COLORS = ['#a78bfa', '#2dd4bf', '#fbbf24', '#f472b6', '#60a5fa', '#34d399', '#fb923c', '#e879f9']
-const RESERVED_VAR_NAMES = ['user', 'display_name', 'channel', 'message', 'followage', 'redeem_title', 'redeem_input', 'redeem_cost']
+const RESERVED_VAR_NAMES = ['user', 'display_name', 'channel', 'message', 'followage', 'sender', 'streamer', 'redeem_title', 'redeem_input', 'redeem_cost']
 
 function RandomPickEditor({ consideration: c, onChange }) {
   const [fileInfo, setFileInfo] = useState(null)
@@ -2004,7 +2029,7 @@ function ConsiderationRow({ consideration, onChange, onRemove, onMoveUp, onMoveD
 
 // ── ActionRow ─────────────────────────────────────────────────────────────────
 
-function ActionRow({ action, onChange, onRemove, canRemove, hasBot, params, userParams = [], pattern }) {
+function ActionRow({ action, onChange, onRemove, canRemove, hasBot, params, userParams = [], linkedParams = {}, pattern }) {
   const [advOpen, setAdvOpen] = useState(false)
   const [obsSources, setObsSources] = useState([])
   const [obsScenes, setObsScenes] = useState([])
@@ -2022,7 +2047,8 @@ function ActionRow({ action, onChange, onRemove, canRemove, hasBot, params, user
     const vars = []
     const colors = {}
     // Built-in Twitch vars
-    const builtIns = ['user','display_name','message','channel','followage']
+    const builtIns = ['user','display_name','message','channel','followage',
+      ...Object.keys(USER_SOURCES).flatMap(s => USER_PROPS.map(u => `${s}.${u.key}`))]
     builtIns.forEach(n => { colors[n] = 'sky' })
     if (pattern) {
       const matches = pattern.match(/@\{[^}]+\}/g) ?? []
@@ -2175,20 +2201,9 @@ function ActionRow({ action, onChange, onRemove, canRemove, hasBot, params, user
                 ))}
                 {patternVars.map(p => {
                   const c = PILL_COLORS[varColors[p] ?? 'violet']
-                  if (userParams.includes(p)) return (
-                    <div key={p} className="flex items-stretch rounded border border-violet-700/60 overflow-hidden text-xs">
-                      <button type="button" onClick={() => insertVar(`${p}.name`)}
-                        className="px-2 py-0.5 font-mono bg-violet-900/50 text-violet-300 hover:bg-violet-900/70 transition-colors">
-                        👤 {p}
-                      </button>
-                      {USER_PROPS.filter(u => u.key !== 'name').map(u => (
-                        <button key={u.key} type="button" onClick={() => insertVar(`${p}.${u.key}`)}
-                          className="px-2 py-0.5 border-l border-violet-700/60 bg-violet-900/20 text-violet-400 hover:bg-violet-900/50 transition-colors">
-                          {u.icon} {u.label}
-                        </button>
-                      ))}
-                    </div>
-                  )
+                  // Optional param falling back to Sender/Streamer: shown as that user, no separate variable
+                  if (linkedParams[p]) return <UserPillGroup key={p} name={p} linkedTo={linkedParams[p]} onInsert={insertVar} />
+                  if (userParams.includes(p)) return <UserPillGroup key={p} name={p} onInsert={insertVar} />
                   return (
                     <button key={p} type="button" onClick={() => insertVar(p)}
                       className={`text-xs px-2 py-0.5 rounded font-mono transition-colors ${c} border`}>
@@ -2203,12 +2218,9 @@ function ActionRow({ action, onChange, onRemove, canRemove, hasBot, params, user
               </div>
               {advOpen && (
                 <div className="flex flex-wrap gap-1.5 px-2 py-1.5 bg-twitch-surface border border-twitch-border rounded-lg">
-                  {ADVANCED_VARS.map(v => (
-                    <button key={v.token} type="button" onClick={() => insertVar(v.token.slice(1, -1))}
-                      className={`text-xs px-2 py-0.5 rounded font-mono transition-colors ${PILL_COLORS.sky} border`}
-                    >
-                      {v.label}
-                    </button>
+                  {/* A source linked to a param lives in the main row as "Sender (or param)" instead */}
+                  {Object.entries(USER_SOURCES).filter(([src]) => !Object.values(linkedParams).includes(src)).map(([src, s]) => (
+                    <UserPillGroup key={src} name={src} icon={s.icon} label={s.label} onInsert={insertVar} />
                   ))}
                 </div>
               )}
@@ -2603,7 +2615,7 @@ function ActivationCard({ activation, onChange }) {
 
 // ── ResponseGroup ─────────────────────────────────────────────────────────────
 
-function ResponseGroup({ group, onChange, onRemove, canRemove, hasBot, params, userParams, pattern, groupIndex, isMultiResponse }) {
+function ResponseGroup({ group, onChange, onRemove, canRemove, hasBot, params, userParams, linkedParams, pattern, groupIndex, isMultiResponse }) {
   function patchGroup(k, v) { onChange({ ...group, [k]: v }) }
   function addAction() { patchGroup('actions', [...group.actions, emptyAction()]) }
   function updateAction(aid, updated) { patchGroup('actions', group.actions.map(a => a.id === aid ? updated : a)) }
@@ -2632,7 +2644,7 @@ function ResponseGroup({ group, onChange, onRemove, canRemove, hasBot, params, u
               onChange={updated => updateAction(action.id, updated)}
               onRemove={() => removeAction(action.id)}
               canRemove={group.actions.length > 1}
-              hasBot={hasBot} params={params} userParams={userParams} pattern={pattern} />
+              hasBot={hasBot} params={params} userParams={userParams} linkedParams={linkedParams} pattern={pattern} />
           ))}
         </div>
         <button onClick={addAction} className="flex items-center gap-1.5 text-teal-500 hover:text-teal-400 text-xs transition-colors">
@@ -2664,7 +2676,7 @@ function ParamRow({ param, onChange, onRemove }) {
       <div className="flex shrink-0 rounded border border-twitch-border overflow-hidden text-xs">
         {[['text', '📝 Any text'], ['number', '🔢 Numbers only'], ['user', '👤 Twitch user']].map(([v, l]) => (
           <button key={v} onClick={() => patch('paramType', v)}
-            className={`px-2 py-1 transition-colors ${
+            className={`pl-1 pr-2 py-1 transition-colors ${
               (param.paramType ?? 'text') === v ? 'bg-teal-900/40 text-teal-400' : 'text-twitch-muted hover:text-twitch-text'
             }`}>{l}</button>
         ))}
@@ -2697,9 +2709,19 @@ function ParamRow({ param, onChange, onRemove }) {
 }
 
 const DEFAULT_CHIPS = [
-  { value: '{display_name}', label: 'Their name', icon: Users },
-  { value: '{channel}', label: 'Your channel', icon: Radio },
+  { value: '{display_name}', source: 'sender',      label: 'Sender',      icon: Users },
+  { value: '{channel}',      source: 'streamer',    label: 'Streamer', icon: Radio },
 ]
+
+// { paramName: 'sender'|'streamer' } for optional params that fall back to an implicit user
+function linkedParamsOf(commandParams = []) {
+  const out = {}
+  for (const p of commandParams) {
+    const chip = p.name && p.optional && DEFAULT_CHIPS.find(c => c.value === p.defaultValue)
+    if (chip && !Object.values(out).includes(chip.source)) out[p.name] = chip.source
+  }
+  return out
+}
 
 // ── Main Editor ───────────────────────────────────────────────────────────────
 
@@ -3608,6 +3630,7 @@ export default function ChatTriggerEditor() {
                 hasBot={hasBot}
                 params={[...(trigger.type === 'channel_point' ? ['redeem_title', 'redeem_input', 'redeem_cost'] : commandParamNames), ...randomVarNames]}
                 userParams={trigger.type === 'channel_point' ? [] : (trigger.commandParams ?? []).filter(p => p.name && p.paramType === 'user').map(p => p.name)}
+                linkedParams={trigger.type === 'channel_point' ? {} : linkedParamsOf(trigger.commandParams)}
                 pattern={trigger.type === 'channel_point' ? '' : trigger.pattern}
                 isMultiResponse={(trigger.responses ?? []).length > 1} />
             ))}

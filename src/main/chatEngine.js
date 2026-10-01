@@ -744,15 +744,23 @@ function channelDisplay(c) { return c && c === _channel ? (_channelDisplay ?? c)
 
 const USER_PROP_RE = /^(\w+)\.(name|game|link|followage)$/
 
+// Login behind a Twitch-user variable: implicit sender/streamer, else a user param.
+function userLogin(name, ctx) {
+  if (name === 'sender') return ctx.username ?? ''
+  if (name === 'streamer') return ctx.channel ?? ''
+  return ctx.params?.[name] ?? ''
+}
+
 // Looks up Twitch data for every @{param.prop} used in the templates (link needs no lookup).
-async function resolveUserProps(templates, params, { fetchUserByLogin, fetchChannelInfo, fetchFollowage, mainUser }) {
+async function resolveUserProps(templates, ctx, { fetchUserByLogin, fetchChannelInfo, fetchFollowage, mainUser }) {
   const wanted = {}
   for (const m of templates.matchAll(/@\{(\w+)\.(name|game|followage)\}/g)) (wanted[m[1]] ??= new Set()).add(m[2])
   const out = {}
   for (const [param, props] of Object.entries(wanted)) {
-    if (!params[param]) continue
+    const login = userLogin(param, ctx)
+    if (!login) continue
     try {
-      const user = await fetchUserByLogin?.(params[param])
+      const user = await fetchUserByLogin?.(login)
       if (!user) continue
       out[`${param}.name`] = user.display_name
       if (props.has('game')) out[`${param}.game`] = (await fetchChannelInfo?.(user.id))?.game_name || '(unknown)'
@@ -775,11 +783,13 @@ export function renderTemplate(template, ctx) {
     if (varName === 'redeem_title') return ctx.params?.redeem_title ?? ''
     if (varName === 'redeem_input') return ctx.params?.redeem_input ?? ''
     if (varName === 'redeem_cost') return ctx.params?.redeem_cost ?? ''
-    // Twitch-user param lookups: @{param.name|game|link|followage}
+    // Twitch-user lookups: @{sender|streamer|param .name|game|link|followage}
     const dot = varName.match(USER_PROP_RE)
     if (dot) {
-      const login = ctx.params?.[dot[1]] ?? ''
+      const login = userLogin(dot[1], ctx)
       if (dot[2] === 'link') return login ? `https://twitch.tv/${login.toLowerCase()}` : ''
+      if (dot[2] === 'name' && dot[1] === 'sender') return ctx.displayName ?? login
+      if (dot[2] === 'name' && dot[1] === 'streamer') return channelDisplay(login)
       return ctx.userProps?.[varName] ?? (dot[2] === 'name' ? login : '(unknown)')
     }
     // Named parameter from pattern capture/choice
@@ -1242,7 +1252,7 @@ export async function runTriggers(msg, triggers, opts = {}) {
       }
     }
 
-    ctx.userProps = await resolveUserProps(allTemplates, ctx.params, { fetchUserByLogin, fetchChannelInfo, fetchFollowage, mainUser })
+    ctx.userProps = await resolveUserProps(allTemplates, ctx, { fetchUserByLogin, fetchChannelInfo, fetchFollowage, mainUser })
 
     // Apply wait consideration delay before first action
     if (waitMs > 0) await new Promise(r => setTimeout(r, waitMs))
